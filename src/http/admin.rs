@@ -639,6 +639,7 @@ mod tests {
             "/admin/rescan",
             "/admin/reshuffle",
             "/admin/scan-report",
+            "/admin/config",
         ] {
             assert!(body.contains(path), "missing endpoint reference: {}", path);
         }

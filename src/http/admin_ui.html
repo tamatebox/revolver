@@ -61,6 +61,67 @@
     }
     .status { color: var(--muted); font-size: 0.85em; margin-left: 0.5em; }
     .status.error { color: var(--danger); }
+
+    /* Settings form */
+    .settings-section { margin-bottom: 0.75em; }
+    .settings-section h3 {
+      margin: 0.5em 0 0.4em;
+      font-size: 0.95em;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .settings-row {
+      display: grid;
+      grid-template-columns: 18em 1fr auto;
+      gap: 0.5em 1em;
+      align-items: center;
+      padding: 0.35em 0;
+      border-bottom: 1px dashed var(--border);
+    }
+    .settings-row:last-child { border-bottom: none; }
+    .settings-key { font-family: monospace; font-size: 0.9em; }
+    .settings-key .modified-dot {
+      display: inline-block;
+      width: 0.5em;
+      height: 0.5em;
+      border-radius: 50%;
+      background: #f59e0b;
+      margin-right: 0.35em;
+      visibility: hidden;
+    }
+    .settings-row.dirty .modified-dot,
+    .settings-row.user-source .modified-dot { visibility: visible; }
+    .settings-row.user-source .modified-dot { background: var(--accent); }
+    .settings-row.dirty .modified-dot { background: #f59e0b; }
+    .settings-input {
+      width: 100%;
+      padding: 0.3em 0.5em;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      font: inherit;
+    }
+    .settings-input[type="checkbox"] { width: auto; }
+    .reset-link {
+      background: none;
+      border: none;
+      color: var(--muted);
+      padding: 0.2em 0.4em;
+      margin: 0;
+      cursor: pointer;
+      font-size: 0.85em;
+    }
+    .reset-link:hover:not(:disabled) {
+      background: none;
+      color: var(--accent);
+    }
+    .reset-link:disabled { opacity: 0.3; }
+    .settings-hint {
+      grid-column: 1 / -1;
+      font-size: 0.8em;
+      color: var(--muted);
+      margin-left: 0.2em;
+    }
   </style>
 </head>
 <body>
@@ -89,6 +150,13 @@
       <div>Uptime</div><div id="uptime">–</div>
       <div>Last scan</div><div id="last-scan">–</div>
     </div>
+  </div>
+
+  <div class="card">
+    <h2>Settings</h2>
+    <div id="settings-form">loading…</div>
+    <button id="btn-save-settings" disabled>Save changes</button>
+    <span class="status" id="settings-status"></span>
   </div>
 
   <div class="card">
@@ -217,8 +285,233 @@
     });
     document.getElementById("btn-show-report").addEventListener("click", showScanReport);
 
+    // ── Settings (#14) ───────────────────────────────────────────────────
+    // Each row keeps its initial value so we can compute the diff at Save
+    // time and POST only the keys that actually changed.
+    const settingsState = new Map(); // key -> { initial, current, type, default, source, restartRequired, row, input }
+
+    function inferType(value, defaultValue) {
+      // Booleans take precedence (typeof null === "object" so it's irrelevant here).
+      if (typeof value === "boolean" || typeof defaultValue === "boolean") return "bool";
+      // If either side is null, the key allows null → render as "nullable number".
+      if (value === null || defaultValue === null) return "nullable-number";
+      if (typeof value === "number") return "number";
+      return "text"; // fallback for future string settings
+    }
+
+    function restartHint(tier) {
+      if (tier === "reload") return "Saving will trigger a rescan.";
+      if (tier === "restart") return "Takes effect after server restart.";
+      return null;
+    }
+
+    function valueEqual(a, b) {
+      // Treat undefined / null as equal to null for diffing purposes.
+      if (a === undefined) a = null;
+      if (b === undefined) b = null;
+      return a === b;
+    }
+
+    function readInput(state) {
+      const { input, type } = state;
+      if (type === "bool") return input.checked;
+      const raw = input.value.trim();
+      if (type === "nullable-number") return raw === "" ? null : Number(raw);
+      if (type === "number") return raw === "" ? null : Number(raw);
+      return raw;
+    }
+
+    function writeInput(state, value) {
+      const { input, type } = state;
+      if (type === "bool") {
+        input.checked = !!value;
+        return;
+      }
+      input.value = value === null || value === undefined ? "" : String(value);
+    }
+
+    function refreshDirty() {
+      let anyDirty = false;
+      for (const state of settingsState.values()) {
+        const isDirty = !valueEqual(state.current, state.initial);
+        state.row.classList.toggle("dirty", isDirty);
+        anyDirty = anyDirty || isDirty;
+      }
+      document.getElementById("btn-save-settings").disabled = !anyDirty;
+    }
+
+    function renderSettings(entries) {
+      const form = document.getElementById("settings-form");
+      form.innerHTML = "";
+      settingsState.clear();
+
+      // Group by section (the part before the first dot).
+      const sections = new Map();
+      for (const e of entries) {
+        const section = e.key.split(".")[0];
+        if (!sections.has(section)) sections.set(section, []);
+        sections.get(section).push(e);
+      }
+
+      for (const [section, items] of sections) {
+        const sec = document.createElement("div");
+        sec.className = "settings-section";
+        const h3 = document.createElement("h3");
+        h3.textContent = section;
+        sec.appendChild(h3);
+
+        for (const e of items) {
+          const row = document.createElement("div");
+          row.className = "settings-row";
+          if (e.source === "user") row.classList.add("user-source");
+
+          const keyDiv = document.createElement("div");
+          keyDiv.className = "settings-key";
+          const dot = document.createElement("span");
+          dot.className = "modified-dot";
+          dot.title = "modified from default";
+          keyDiv.appendChild(dot);
+          keyDiv.appendChild(document.createTextNode(e.key));
+          row.appendChild(keyDiv);
+
+          const type = inferType(e.value, e.default);
+          const input = document.createElement("input");
+          input.className = "settings-input";
+          if (type === "bool") {
+            input.type = "checkbox";
+            input.checked = !!e.value;
+          } else if (type === "number" || type === "nullable-number") {
+            input.type = "number";
+            input.min = "1";
+            input.value = e.value === null || e.value === undefined ? "" : String(e.value);
+            if (type === "nullable-number") {
+              input.placeholder = "(empty = no cap)";
+            }
+          } else {
+            input.type = "text";
+            input.value = e.value === null ? "" : String(e.value);
+          }
+          row.appendChild(input);
+
+          const resetBtn = document.createElement("button");
+          resetBtn.className = "reset-link";
+          resetBtn.textContent = "↺ default";
+          resetBtn.title = "reset to default";
+          resetBtn.disabled = e.source !== "user";
+          row.appendChild(resetBtn);
+
+          const hint = restartHint(e.restart_required);
+          if (hint) {
+            const hintDiv = document.createElement("div");
+            hintDiv.className = "settings-hint";
+            hintDiv.textContent = hint;
+            row.appendChild(hintDiv);
+          }
+
+          const state = {
+            key: e.key,
+            initial: e.value,
+            current: e.value,
+            default: e.default,
+            source: e.source,
+            type,
+            row,
+            input,
+          };
+          settingsState.set(e.key, state);
+
+          input.addEventListener("input", () => {
+            state.current = readInput(state);
+            refreshDirty();
+          });
+          input.addEventListener("change", () => {
+            state.current = readInput(state);
+            refreshDirty();
+          });
+
+          resetBtn.addEventListener("click", async () => {
+            await resetKey(e.key);
+          });
+
+          sec.appendChild(row);
+        }
+        form.appendChild(sec);
+      }
+      refreshDirty();
+    }
+
+    async function fetchSettings() {
+      const status = document.getElementById("settings-status");
+      try {
+        const resp = await fetch("/admin/config");
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const entries = await resp.json();
+        renderSettings(entries);
+        status.textContent = "";
+        status.classList.remove("error");
+      } catch (e) {
+        const form = document.getElementById("settings-form");
+        form.textContent = `failed to load: ${e.message}`;
+        status.textContent = "";
+        status.classList.add("error");
+      }
+    }
+
+    async function saveSettings() {
+      const status = document.getElementById("settings-status");
+      const btn = document.getElementById("btn-save-settings");
+      const changed = {};
+      for (const state of settingsState.values()) {
+        if (!valueEqual(state.current, state.initial)) {
+          changed[state.key] = state.current;
+        }
+      }
+      if (Object.keys(changed).length === 0) return;
+      btn.disabled = true;
+      status.textContent = "saving…";
+      status.classList.remove("error");
+      try {
+        const resp = await fetch("/admin/config", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(changed),
+        });
+        if (!resp.ok) {
+          const body = await resp.text();
+          throw new Error(`HTTP ${resp.status}: ${body}`);
+        }
+        status.textContent = "saved";
+        await fetchSettings();
+      } catch (e) {
+        status.textContent = `save failed: ${e.message}`;
+        status.classList.add("error");
+        btn.disabled = false;
+      }
+    }
+
+    async function resetKey(key) {
+      const status = document.getElementById("settings-status");
+      status.textContent = `resetting ${key}…`;
+      status.classList.remove("error");
+      try {
+        const resp = await fetch(`/admin/config/${encodeURIComponent(key)}`, { method: "DELETE" });
+        if (!resp.ok) {
+          const body = await resp.text();
+          throw new Error(`HTTP ${resp.status}: ${body}`);
+        }
+        status.textContent = `${key} reset to default`;
+        await fetchSettings();
+      } catch (e) {
+        status.textContent = `reset failed: ${e.message}`;
+        status.classList.add("error");
+      }
+    }
+
+    document.getElementById("btn-save-settings").addEventListener("click", saveSettings);
+
     // Initial fetch + start polling.
     fetchStats();
+    fetchSettings();
     setInterval(fetchStats, POLL_INTERVAL_MS);
   </script>
 </body>
