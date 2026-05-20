@@ -135,6 +135,14 @@ fn handle_search(
     };
 
     let expr = search::parse_criteria(criteria);
+    tracing::info!(
+        target: "revolver::search",
+        criteria = %criteria,
+        starting_index = starting_index,
+        requested_count = requested_count_raw,
+        parsed = ?expr,
+        "ContentDirectory Search received"
+    );
 
     let conn = pool.get().map_err(|_| soap::SoapFault::internal_error())?;
     let art_base = format!("http://{}:{}/art", state.local_ip, state.http_port);
