@@ -3,6 +3,7 @@ pub mod content_directory;
 pub mod device;
 pub mod didl;
 pub mod gena;
+pub mod icon;
 pub mod notify;
 pub mod object_id;
 pub mod scpd;

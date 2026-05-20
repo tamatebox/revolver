@@ -46,9 +46,10 @@ src/
 │
 ├── upnp/                 # ─── UPnP protocol layer ─────────────────────
 │   ├── mod.rs
-│   ├── device.rs             Builds `/description.xml`
+│   ├── device.rs             Builds `/description.xml` (with `<iconList>`)
 │   ├── scpd.rs               `/scpd/cd.xml`, `/scpd/cm.xml`
 │   │                            (separate files, embedded via `include_str!`)
+│   ├── icon.rs               `assets/icon-{48,120}.png` embedded via `include_bytes!`
 │   ├── soap.rs               SOAP envelope parse (quick-xml) / encode + `SoapFault`
 │   ├── content_directory.rs  Browse / Search / GetSystemUpdateID /
 │   │                            GetSearchCapabilities / GetSortCapabilities.
@@ -84,7 +85,8 @@ src/
 └── http/                 # ─── HTTP / axum router (SPEC §8) ────────────
     ├── mod.rs            Router construction, endpoint registration, `HttpError`,
     │                        `ConcurrencyLimitLayer` (256 concurrent connections)
-    ├── upnp.rs           `GET /description.xml`, `/scpd/cd.xml`, `/scpd/cm.xml`
+    ├── upnp.rs           `GET /description.xml`, `/scpd/cd.xml`, `/scpd/cm.xml`,
+    │                        `/icon/48.png`, `/icon/120.png`
     ├── soap_ctrl.rs      `POST /control/cd`, `/control/cm`
     ├── stream.rs         `GET /stream/{track_id}` + Range (SPEC §8.2) +
     │                        play-stats counter (Range absent or `start=0` only +1,

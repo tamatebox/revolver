@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  revolver — UPnP MediaServer icon.
+  Generic vinyl-record motif: black disc, concentric grooves, red center label.
+  Original work. No reference to any third-party artwork.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <circle cx="60" cy="60" r="58" fill="#0e0e0e"/>
+  <circle cx="60" cy="60" r="58" fill="none" stroke="#1d1d1d" stroke-width="0.6"/>
+  <g fill="none" stroke="#2a2a2a" stroke-width="0.45" opacity="0.85">
+    <circle cx="60" cy="60" r="52"/>
+    <circle cx="60" cy="60" r="48"/>
+    <circle cx="60" cy="60" r="44"/>
+    <circle cx="60" cy="60" r="40"/>
+    <circle cx="60" cy="60" r="36"/>
+    <circle cx="60" cy="60" r="32"/>
+    <circle cx="60" cy="60" r="28"/>
+  </g>
+  <circle cx="60" cy="60" r="22" fill="#b8312a"/>
+  <circle cx="60" cy="60" r="22" fill="none" stroke="#7a1f1a" stroke-width="0.5"/>
+  <circle cx="60" cy="60" r="2.4" fill="#0e0e0e"/>
+</svg>

@@ -13,6 +13,22 @@ const TEMPLATE: &str = r#"<?xml version="1.0"?>
     <modelName>revolver</modelName>
     <modelNumber>0.1.0</modelNumber>
     <UDN>uuid:{uuid}</UDN>
+    <iconList>
+      <icon>
+        <mimetype>image/png</mimetype>
+        <width>48</width>
+        <height>48</height>
+        <depth>32</depth>
+        <url>/icon/48.png</url>
+      </icon>
+      <icon>
+        <mimetype>image/png</mimetype>
+        <width>120</width>
+        <height>120</height>
+        <depth>32</depth>
+        <url>/icon/120.png</url>
+      </icon>
+    </iconList>
     <serviceList>
       <service>
         <serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType>
@@ -62,6 +78,15 @@ mod tests {
         assert!(xml.contains("urn:schemas-upnp-org:service:ConnectionManager:1"));
         assert!(xml.contains("<SCPDURL>/scpd/cd.xml</SCPDURL>"));
         assert!(xml.contains("<SCPDURL>/scpd/cm.xml</SCPDURL>"));
+    }
+
+    #[test]
+    fn d3_description_advertises_icon_list() {
+        let xml = description_xml("AAAA", "Test Server");
+        assert!(xml.contains("<iconList>"));
+        assert!(xml.contains("<url>/icon/48.png</url>"));
+        assert!(xml.contains("<url>/icon/120.png</url>"));
+        assert!(xml.contains("<mimetype>image/png</mimetype>"));
     }
 
     #[test]

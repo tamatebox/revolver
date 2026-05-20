@@ -426,8 +426,11 @@ invalidate their Browse cache.
 - Services:
   - `ContentDirectory:1`
   - `ConnectionManager:1`
-- `friendlyName` is configurable (default: hostname + `" Music Server"`).
+- `friendlyName` is configurable (default: `"Revolver"`).
 - UUID is persistent (`server_state.uuid`, v4 generated on first run).
+- `<iconList>` advertises two PNGs embedded in the binary, served from
+  `/icon/48.png` (48×48) and `/icon/120.png` (120×120). Source SVG lives at
+  `assets/icon.svg`; PNGs are pre-rendered and committed under `assets/`.
 
 ### 5.3 ContentDirectory:1
 
@@ -964,7 +967,7 @@ Endpoint: `GET /art/{album_id}?v={version}`.
   "server": {
     "version": "0.1.0",
     "uuid": "...",
-    "friendly_name": "Listening Room Server"
+    "friendly_name": "Revolver"
   }
 }
 ```
@@ -1163,7 +1166,7 @@ Reasoning:
 
 ```toml
 [server]
-friendly_name = "Listening Room Server"
+friendly_name = "Revolver"
 http_port = 8200
 uuid = "auto"  # generated on first run and persisted
 

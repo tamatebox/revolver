@@ -108,7 +108,7 @@ mod tests {
         let text = include_str!("../config.toml.example");
         let cfg: Config = toml::from_str(text).expect("example must parse");
 
-        assert_eq!(cfg.server.friendly_name, "Listening Room Server");
+        assert_eq!(cfg.server.friendly_name, "Revolver");
         assert_eq!(cfg.server.http_port, 8200);
         assert_eq!(cfg.server.uuid, "auto");
         assert_eq!(cfg.server.db_path, PathBuf::from("revolver.db"));

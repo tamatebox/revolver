@@ -3,7 +3,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 use crate::state::AppState;
-use crate::upnp::{device, scpd};
+use crate::upnp::{device, icon, scpd};
 
 const XML_CONTENT_TYPE: &str = "text/xml; charset=\"utf-8\"";
 
@@ -29,6 +29,26 @@ pub async fn scpd_cm() -> Response {
         StatusCode::OK,
         [("content-type", XML_CONTENT_TYPE)],
         scpd::CONNECTION_MANAGER,
+    )
+        .into_response()
+}
+
+/// `GET /icon/48.png` — small icon referenced by Device Description `<iconList>`.
+pub async fn icon_48() -> Response {
+    (
+        StatusCode::OK,
+        [("content-type", icon::MIME)],
+        icon::ICON_48_PNG,
+    )
+        .into_response()
+}
+
+/// `GET /icon/120.png` — large icon referenced by Device Description `<iconList>`.
+pub async fn icon_120() -> Response {
+    (
+        StatusCode::OK,
+        [("content-type", icon::MIME)],
+        icon::ICON_120_PNG,
     )
         .into_response()
 }

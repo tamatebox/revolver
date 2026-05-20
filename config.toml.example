@@ -3,7 +3,7 @@
 # See SPEC.md §12 for the authoritative schema.
 
 [server]
-friendly_name = "Listening Room Server"
+friendly_name = "Revolver"
 http_port     = 8200
 uuid          = "auto"  # generated on first run and persisted to server_state
 
