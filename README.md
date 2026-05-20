@@ -97,6 +97,12 @@ cargo clippy --all-targets
 cargo fmt
 ```
 
+Optional — enable the in-repo pre-commit hook (`cargo fmt --check` + `cargo clippy -- -D warnings`, mirrors CI) once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
 ## Running with Docker
 
 revolver also runs in a container, **but SSDP discovery requires
