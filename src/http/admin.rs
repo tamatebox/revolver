@@ -6,7 +6,6 @@ use serde::Serialize;
 
 use crate::db::state_kv;
 use crate::http::HttpError;
-use crate::scan::report::ScanReport;
 use crate::state::AppState;
 
 /// Single-page HTML for the Web admin UI (SPEC §8.4). CSS / JS are inline, no dependencies.
@@ -40,51 +39,112 @@ pub async fn scan_report(State(state): State<AppState>) -> Result<Response, Http
     }
 }
 
-/// `POST /admin/rescan` — start a scan, wait for completion, return the ScanReport JSON.
-/// 409 if `scan_lock` is already held.
-pub async fn rescan(State(state): State<AppState>) -> Result<Json<ScanReport>, HttpError> {
+/// `POST /admin/rescan` — schedule a scan and return **immediately** (#18).
+///
+/// Returns `202 Accepted` with `{ scan_id, started_at }`. The scan task runs
+/// in the background via `tokio::spawn`; callers poll
+/// [`scan_progress`](super::admin::scan_progress) for completion and read the
+/// final [`ScanReport`](crate::scan::report::ScanReport) from
+/// `GET /admin/scan-report`.
+///
+/// Returns `409 Conflict` immediately if a scan is already in flight (the
+/// `scan_lock` semaphore is held).
+pub async fn rescan(State(state): State<AppState>) -> Result<RescanAccepted, HttpError> {
     let permit = state
         .scan_lock
         .clone()
         .try_acquire_owned()
         .map_err(|_| HttpError::Conflict("scan already running"))?;
 
+    let scan_id = crate::scan::report::ScanReport::new_id();
+    let started_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
     let library_root = state.library_root.clone();
     let extensions = state.extensions.clone();
     let parallel = state.scan_parallel;
     let pool = state.db_pool.clone();
-
     let progress = state.scan_progress.clone();
-    let report = tokio::task::spawn_blocking(move || -> crate::error::Result<ScanReport> {
-        let _permit = permit; // Hold the permit until the task completes.
-        let mut conn = pool.get()?;
-        crate::scan::run(&mut conn, &library_root, &extensions, parallel, progress)
-    })
-    .await
-    .map_err(|e| HttpError::Internal(anyhow::Error::new(e)))??;
+    let state_for_post = state.clone();
+    let scan_id_log = scan_id.clone();
 
-    // SPEC §5.1 / §9.6: if there was a structural change, deliver a SystemUpdateID
-    // propchange NOTIFY to CD subscribers (the value is already bumped inside scan::run).
-    if crate::scan::should_bump_system_update_id(&report.stats) {
-        let conn = state.db_pool.get()?;
-        let id = state_kv::get(&conn, "system_update_id")?.unwrap_or_else(|| "1".to_string());
-        drop(conn);
-        crate::upnp::gena::broadcast_propchange(
-            &state.notify_client,
-            &state.subscriptions,
-            &state.notify_tasks,
-            crate::upnp::gena::ServiceId::ContentDirectory,
-            &[("SystemUpdateID", &id)],
+    // Fire-and-forget: detach the scan + post-scan side effects so the HTTP
+    // response can return as soon as the permit is held.
+    tokio::spawn(async move {
+        let scan_result = tokio::task::spawn_blocking(
+            move || -> crate::error::Result<crate::scan::report::ScanReport> {
+                let _permit = permit; // Hold the permit until the task completes.
+                let mut conn = pool.get()?;
+                crate::scan::run(&mut conn, &library_root, &extensions, parallel, progress)
+            },
         )
         .await;
 
-        // On structural changes, reorder Random as well (SPEC §6.6).
-        let conn = state.db_pool.get()?;
-        let n = state.random_state.reshuffle(&conn)?;
-        tracing::info!(albums = n, "post-rescan random reshuffle complete");
-    }
+        let report = match scan_result {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
+                tracing::error!(scan_id = %scan_id_log, error = ?e, "background scan failed");
+                return;
+            }
+            Err(e) => {
+                tracing::error!(scan_id = %scan_id_log, error = ?e, "background scan join failed");
+                return;
+            }
+        };
 
-    Ok(Json(report))
+        // SPEC §5.1 / §9.6: if there was a structural change, deliver a SystemUpdateID
+        // propchange NOTIFY to CD subscribers (the value is already bumped inside scan::run).
+        if crate::scan::should_bump_system_update_id(&report.stats) {
+            let conn = match state_for_post.db_pool.get() {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!(error = ?e, "post-rescan: failed to get DB conn");
+                    return;
+                }
+            };
+            let id = state_kv::get(&conn, "system_update_id")
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "1".to_string());
+            drop(conn);
+            crate::upnp::gena::broadcast_propchange(
+                &state_for_post.notify_client,
+                &state_for_post.subscriptions,
+                &state_for_post.notify_tasks,
+                crate::upnp::gena::ServiceId::ContentDirectory,
+                &[("SystemUpdateID", &id)],
+            )
+            .await;
+
+            // On structural changes, reorder Random as well (SPEC §6.6).
+            if let Ok(conn) = state_for_post.db_pool.get() {
+                match state_for_post.random_state.reshuffle(&conn) {
+                    Ok(n) => tracing::info!(albums = n, "post-rescan random reshuffle complete"),
+                    Err(e) => tracing::error!(error = ?e, "post-rescan reshuffle failed"),
+                }
+            }
+        }
+    });
+
+    Ok(RescanAccepted {
+        scan_id,
+        started_at,
+    })
+}
+
+/// 202-Accepted body for `POST /admin/rescan` (#18).
+#[derive(Serialize)]
+pub struct RescanAccepted {
+    pub scan_id: String,
+    pub started_at: i64,
+}
+
+impl IntoResponse for RescanAccepted {
+    fn into_response(self) -> Response {
+        (StatusCode::ACCEPTED, Json(self)).into_response()
+    }
 }
 
 #[derive(Serialize)]
@@ -331,7 +391,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn h3_rescan_runs_and_returns_report() {
+    async fn h3_rescan_returns_202_immediately_and_completes_in_background() {
+        // #18: POST /admin/rescan returns 202 Accepted with { scan_id, started_at }
+        // and the scan runs as a detached background task. The library here is
+        // an empty tempdir so the scan finishes in milliseconds; we then wait
+        // for the permit release to confirm the background task ran.
         let (state, _db, _lib) = test_state_with_library();
         let lock = state.scan_lock.clone();
         let app = crate::http::router(state);
@@ -345,14 +409,29 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
         let body = body_string(resp).await;
-        assert!(body.contains("scan_id"));
-        // The permit must be released.
         assert!(
-            lock.try_acquire().is_ok(),
-            "scan_lock should be released after rescan completes"
+            body.contains("scan_id"),
+            "body should carry scan_id: {body}"
         );
+        assert!(
+            body.contains("started_at"),
+            "body should carry started_at: {body}"
+        );
+
+        // Wait for the background scan to finish (poll the semaphore for up to
+        // ~2s; an empty-tempdir scan completes in single-digit ms in practice).
+        let acquired = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if lock.try_acquire().is_ok() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(acquired.is_ok(), "scan_lock should be released within 2s");
     }
 
     #[tokio::test]

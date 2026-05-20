@@ -243,6 +243,67 @@ async fn e2e5_stream_during_rescan_still_succeeds() {
 }
 
 #[tokio::test]
+async fn e2e6_rescan_returns_202_then_scan_completes_in_background() {
+    // #18: POST /admin/rescan returns 202 with { scan_id, started_at } and the
+    // scan runs as a detached background task. The contract is exercised over a
+    // real TCP socket here so a regression that breaks the response shape (e.g.
+    // accidentally returning the full ScanReport again) surfaces immediately.
+    let (addr, _db, _f, _tid) = spawn_server().await;
+
+    let raw = raw_request(
+        addr,
+        "POST /admin/rescan HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+    )
+    .await;
+    let (headers, body) = split_response(&raw);
+    assert!(
+        headers.starts_with("HTTP/1.1 202"),
+        "expected 202 Accepted: {}",
+        headers
+    );
+    let body_str = String::from_utf8_lossy(&body);
+    assert!(
+        body_str.contains("scan_id"),
+        "body should carry scan_id: {}",
+        body_str
+    );
+    assert!(
+        body_str.contains("started_at"),
+        "body should carry started_at: {}",
+        body_str
+    );
+    // The 202 body is just the two new fields, not the full ScanReport — guard
+    // against a regression where the old sync handler is restored.
+    assert!(
+        !body_str.contains("\"stats\""),
+        "202 body should not include the full ScanReport: {}",
+        body_str
+    );
+
+    // The detached scan eventually returns the progress counter to idle.
+    let started = std::time::Instant::now();
+    loop {
+        let raw = raw_request(
+            addr,
+            "GET /admin/scan-progress HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        let (_, body) = split_response(&raw);
+        let body_str = String::from_utf8_lossy(&body);
+        if body_str.contains("\"phase\":\"idle\"") {
+            break;
+        }
+        if started.elapsed() > Duration::from_secs(5) {
+            panic!(
+                "background scan did not complete within 5s; last progress: {}",
+                body_str
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
 async fn e2e6_admin_scan_report_404_before_any_scan() {
     // Right after startup (no scan has run yet) /admin/scan-report -> 404.
     let (addr, _db, _f, _tid) = spawn_server().await;

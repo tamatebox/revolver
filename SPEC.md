@@ -840,8 +840,12 @@ because of bad values here.
 | `GET /` | Web admin UI (HTML, §8.4) |
 | `GET /admin/stats` | Library statistics (JSON, §8.5) |
 | `GET /admin/scan-report` | Most recent scan report (JSON, §4.7) |
-| `POST /admin/rescan` | Trigger a scan |
+| `GET /admin/scan-progress` | Live in-flight scan counter (JSON, #12) |
+| `POST /admin/rescan` | Schedule a scan — **202 Accepted** with `{ scan_id, started_at }`, runs in the background (#18). Poll `/admin/scan-progress` for completion; `/admin/scan-report` for the final report. 409 if a scan is already in flight. |
 | `POST /admin/reshuffle` | Reshuffle random albums |
+| `GET /admin/config` | List effective config + defaults + source (JSON, #13) |
+| `POST /admin/config` | Partial config update (#13) |
+| `DELETE /admin/config/{key}` | Reset a single key to its toml default (#13) |
 
 ### 8.2 Range Request
 

@@ -277,8 +277,62 @@
       }
     }
 
+    // Rescan is async (#18): POST returns 202 immediately, then we poll
+    // /admin/scan-progress until phase returns to "idle".
+    async function rescan(button) {
+      const status = document.getElementById("action-status");
+      button.disabled = true;
+      status.classList.remove("error");
+      status.textContent = "rescan…";
+      try {
+        const resp = await fetch("/admin/rescan", { method: "POST" });
+        if (resp.status === 202 || resp.status === 409) {
+          // 409 = a scan is already running (e.g. triggered by another caller
+          // or by an rsync post-hook). Treat that as "OK, just observe it".
+          await pollScanProgress(status);
+          status.textContent = "rescan complete";
+          fetchStats();
+        } else {
+          const body = await resp.text();
+          throw new Error(`HTTP ${resp.status}: ${body}`);
+        }
+      } catch (e) {
+        status.textContent = `rescan failed: ${e.message}`;
+        status.classList.add("error");
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function pollScanProgress(status) {
+      // 1.5s polling cadence — fast enough to feel live, slow enough not to
+      // hammer SQLite during the scan (each poll is just an atomic load + JSON
+      // serialize, so it's cheap, but matching the ticker log interval is fine).
+      const POLL_MS = 1500;
+      // Give the spawn a beat to flip phase off "idle" before we conclude.
+      await new Promise((r) => setTimeout(r, 200));
+      while (true) {
+        let snap;
+        try {
+          const resp = await fetch("/admin/scan-progress");
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          snap = await resp.json();
+        } catch (e) {
+          status.textContent = `progress poll failed: ${e.message}`;
+          throw e;
+        }
+        if (snap.phase === "idle") return;
+        const pct = snap.total > 0
+          ? ` (${Math.floor((snap.current * 100) / snap.total)}%)`
+          : "";
+        const counts = snap.total > 0 ? ` ${snap.current}/${snap.total}` : "";
+        status.textContent = `rescan: ${snap.phase}${counts}${pct}`;
+        await new Promise((r) => setTimeout(r, POLL_MS));
+      }
+    }
+
     document.getElementById("btn-rescan").addEventListener("click", (e) => {
-      postAction(e.currentTarget, "/admin/rescan", "rescan");
+      rescan(e.currentTarget);
     });
     document.getElementById("btn-reshuffle").addEventListener("click", (e) => {
       postAction(e.currentTarget, "/admin/reshuffle", "reshuffle");
