@@ -247,7 +247,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::schema::migrate(&conn).unwrap();
         let rs = RandomState::new();
-        let s = BrowseSettings::from_parts(50, 100, false); // quality_categories = false
+        let s = BrowseSettings::from_parts(50, None, 100, false); // quality_categories = false
         let r = root_children(&ctx_with(&conn, &rs, &s));
         assert_eq!(r.total_matches, 7);
         let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();

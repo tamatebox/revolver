@@ -64,6 +64,12 @@ pub const CATALOG: &[ConfigKey] = &[
         validate: validate_positive_int,
     },
     ConfigKey {
+        key: "browse.recently_added_max_age_days",
+        reload_tier: ReloadTier::Runtime,
+        default: default_recently_added_max_age_days,
+        validate: validate_nullable_positive_int,
+    },
+    ConfigKey {
         key: "browse.random_albums_limit",
         reload_tier: ReloadTier::Runtime,
         default: default_random_albums_limit,
@@ -85,6 +91,13 @@ fn default_recently_added_limit(c: &Config) -> Value {
     serde_json::json!(c.browse.recently_added_limit)
 }
 
+fn default_recently_added_max_age_days(c: &Config) -> Value {
+    match c.browse.recently_added_max_age_days {
+        Some(n) => serde_json::json!(n),
+        None => Value::Null,
+    }
+}
+
 fn default_random_albums_limit(c: &Config) -> Value {
     serde_json::json!(c.browse.random_albums_limit)
 }
@@ -99,6 +112,13 @@ fn validate_positive_int(v: &Value) -> std::result::Result<Value, String> {
         Some(_) => Err("must be >= 1".to_string()),
         None => Err("must be a positive integer".to_string()),
     }
+}
+
+fn validate_nullable_positive_int(v: &Value) -> std::result::Result<Value, String> {
+    if v.is_null() {
+        return Ok(Value::Null);
+    }
+    validate_positive_int(v)
 }
 
 fn validate_bool(v: &Value) -> std::result::Result<Value, String> {
@@ -135,6 +155,14 @@ pub fn build_browse_settings(defaults: &DefaultsMap, conn: &Connection) -> Resul
     let recently = effective_value(defaults, conn, "browse.recently_added_limit")?
         .as_u64()
         .unwrap_or(1) as usize;
+    let max_age_days = {
+        let v = effective_value(defaults, conn, "browse.recently_added_max_age_days")?;
+        if v.is_null() {
+            None
+        } else {
+            v.as_u64().map(|n| n.min(u32::MAX as u64) as u32)
+        }
+    };
     let random = effective_value(defaults, conn, "browse.random_albums_limit")?
         .as_u64()
         .unwrap_or(1) as usize;
@@ -143,6 +171,7 @@ pub fn build_browse_settings(defaults: &DefaultsMap, conn: &Connection) -> Resul
         .unwrap_or(true);
     Ok(BrowseSettings::from_parts(
         recently,
+        max_age_days,
         random,
         quality_categories,
     ))

@@ -1,24 +1,12 @@
 //! UPnP ObjectID encode / decode (SPEC §6.1).
 //!
 //! - `0`           — root
-//! - `cat:aa/ar/al/gn/recent/random/hires/lossy/mixed` — category (fixed)
-//! - `cat:recent:{day|week|month|3months|all}` `cat:recent:year:YYYY` — time range (SPEC §6.7)
+//! - `cat:aa/ar/al/gn/recent/played/random/hires/lossy/mixed` — category (fixed)
 //! - `aa:<b64>` `ar:<b64>` `gn:<b64>` — name-based (URL-safe base64, no padding)
 //! - `alb:<id>` `trk:<id>` — albums.id / tracks.id
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-
-/// Time range under `cat:recent` (SPEC §6.7).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecentRange {
-    Day,
-    Week,
-    Month,
-    ThreeMonths,
-    Year(u16),
-    All,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObjectId {
@@ -28,7 +16,6 @@ pub enum ObjectId {
     CatAl,
     CatGn,
     CatRecent,
-    CatRecentRange(RecentRange),
     CatPlayed,
     CatRandom,
     CatHires,
@@ -49,25 +36,12 @@ pub fn parse(s: &str) -> Option<ObjectId> {
         "cat:al" => Some(ObjectId::CatAl),
         "cat:gn" => Some(ObjectId::CatGn),
         "cat:recent" => Some(ObjectId::CatRecent),
-        "cat:recent:day" => Some(ObjectId::CatRecentRange(RecentRange::Day)),
-        "cat:recent:week" => Some(ObjectId::CatRecentRange(RecentRange::Week)),
-        "cat:recent:month" => Some(ObjectId::CatRecentRange(RecentRange::Month)),
-        "cat:recent:3months" => Some(ObjectId::CatRecentRange(RecentRange::ThreeMonths)),
-        "cat:recent:all" => Some(ObjectId::CatRecentRange(RecentRange::All)),
         "cat:played" => Some(ObjectId::CatPlayed),
         "cat:random" => Some(ObjectId::CatRandom),
         "cat:hires" => Some(ObjectId::CatHires),
         "cat:lossy" => Some(ObjectId::CatLossy),
         "cat:mixed" => Some(ObjectId::CatMixed),
         _ => {
-            if let Some(year_str) = s.strip_prefix("cat:recent:year:") {
-                // Clamp roughly to 1900-2100 (prevent typo'd huge years from breaking aggregation bounds).
-                let y: u16 = year_str.parse().ok()?;
-                if !(1900..=2100).contains(&y) {
-                    return None;
-                }
-                return Some(ObjectId::CatRecentRange(RecentRange::Year(y)));
-            }
             if let Some(rest) = s.strip_prefix("aa:") {
                 decode_name(rest).map(ObjectId::AlbumArtist)
             } else if let Some(rest) = s.strip_prefix("ar:") {
@@ -93,14 +67,6 @@ pub fn encode(id: &ObjectId) -> String {
         ObjectId::CatAl => "cat:al".to_string(),
         ObjectId::CatGn => "cat:gn".to_string(),
         ObjectId::CatRecent => "cat:recent".to_string(),
-        ObjectId::CatRecentRange(r) => match r {
-            RecentRange::Day => "cat:recent:day".to_string(),
-            RecentRange::Week => "cat:recent:week".to_string(),
-            RecentRange::Month => "cat:recent:month".to_string(),
-            RecentRange::ThreeMonths => "cat:recent:3months".to_string(),
-            RecentRange::Year(y) => format!("cat:recent:year:{y}"),
-            RecentRange::All => "cat:recent:all".to_string(),
-        },
         ObjectId::CatPlayed => "cat:played".to_string(),
         ObjectId::CatRandom => "cat:random".to_string(),
         ObjectId::CatHires => "cat:hires".to_string(),
@@ -149,59 +115,6 @@ mod tests {
     }
 
     #[test]
-    fn o2b_parse_recent_ranges() {
-        assert_eq!(
-            parse("cat:recent:day"),
-            Some(ObjectId::CatRecentRange(RecentRange::Day))
-        );
-        assert_eq!(
-            parse("cat:recent:week"),
-            Some(ObjectId::CatRecentRange(RecentRange::Week))
-        );
-        assert_eq!(
-            parse("cat:recent:month"),
-            Some(ObjectId::CatRecentRange(RecentRange::Month))
-        );
-        assert_eq!(
-            parse("cat:recent:3months"),
-            Some(ObjectId::CatRecentRange(RecentRange::ThreeMonths))
-        );
-        assert_eq!(
-            parse("cat:recent:all"),
-            Some(ObjectId::CatRecentRange(RecentRange::All))
-        );
-        assert_eq!(
-            parse("cat:recent:year:2025"),
-            Some(ObjectId::CatRecentRange(RecentRange::Year(2025)))
-        );
-    }
-
-    #[test]
-    fn o2c_parse_invalid_recent_year_returns_none() {
-        assert_eq!(parse("cat:recent:year:abc"), None);
-        assert_eq!(parse("cat:recent:year:"), None);
-        assert_eq!(parse("cat:recent:year:99999"), None); // u16 overflow
-        assert_eq!(parse("cat:recent:year:1899"), None); // out of [1900, 2100]
-        assert_eq!(parse("cat:recent:year:2101"), None);
-    }
-
-    #[test]
-    fn o2d_recent_range_roundtrip() {
-        for r in [
-            RecentRange::Day,
-            RecentRange::Week,
-            RecentRange::Month,
-            RecentRange::ThreeMonths,
-            RecentRange::All,
-            RecentRange::Year(2024),
-        ] {
-            let id = ObjectId::CatRecentRange(r);
-            let s = encode(&id);
-            assert_eq!(parse(&s), Some(id), "roundtrip failed for {:?}", r);
-        }
-    }
-
-    #[test]
     fn o3_parse_album_artist_via_roundtrip() {
         let encoded = encode(&ObjectId::AlbumArtist("Beatles".to_string()));
         assert!(encoded.starts_with("aa:"));
@@ -223,6 +136,17 @@ mod tests {
         assert_eq!(parse("alb:notnum"), None);
         assert_eq!(parse("aa:not!valid!base64"), None);
         assert_eq!(parse(""), None);
+    }
+
+    #[test]
+    fn o5b_legacy_recent_range_ids_return_none() {
+        // Prior versions exposed cat:recent:day / cat:recent:year:YYYY. The
+        // hierarchy was dropped (#16) so these now parse as None (Linn will
+        // surface "no such object" if a control point cached an old ObjectID).
+        assert_eq!(parse("cat:recent:day"), None);
+        assert_eq!(parse("cat:recent:week"), None);
+        assert_eq!(parse("cat:recent:all"), None);
+        assert_eq!(parse("cat:recent:year:2024"), None);
     }
 
     // ── proptest: encode → parse round-trip for arbitrary strings ─────────────────
@@ -272,8 +196,6 @@ mod tests {
             ObjectId::CatAl,
             ObjectId::CatGn,
             ObjectId::CatRecent,
-            ObjectId::CatRecentRange(RecentRange::Day),
-            ObjectId::CatRecentRange(RecentRange::Year(2025)),
             ObjectId::CatPlayed,
             ObjectId::CatRandom,
             ObjectId::CatHires,

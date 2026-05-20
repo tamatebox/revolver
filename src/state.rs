@@ -13,9 +13,12 @@ use crate::upnp::gena::{NotifyTasks, Subscriptions};
 /// from AppState to each view via `BrowseContext`.
 #[derive(Debug, Clone)]
 pub struct BrowseSettings {
-    /// Max items per page for `cat:recent:*` (SPEC §6.4).
+    /// Max items returned under `cat:recent` (SPEC §6.7).
     /// Caps SOAP `RequestedCount` even when the client asks for more.
     pub recently_added_limit: usize,
+    /// Hide albums older than this many days from `cat:recent`. `None` (the
+    /// default) means no age cap — show all albums by recency.
+    pub recently_added_max_age_days: Option<u32>,
     /// Max items per page for `cat:random` (SPEC §6.6). Same role.
     pub random_albums_limit: usize,
     /// Whether to expose `cat:hires` / `cat:lossy` / `cat:mixed` in the root
@@ -95,11 +98,13 @@ impl BrowseSettings {
     /// config-independent so it can be reused from both production and tests.
     pub fn from_parts(
         recently_added_limit: usize,
+        recently_added_max_age_days: Option<u32>,
         random_albums_limit: usize,
         quality_categories: bool,
     ) -> Self {
         Self {
             recently_added_limit: recently_added_limit.max(1),
+            recently_added_max_age_days,
             random_albums_limit: random_albums_limit.max(1),
             quality_categories,
         }
@@ -110,6 +115,7 @@ impl Default for BrowseSettings {
     fn default() -> Self {
         Self {
             recently_added_limit: 1000,
+            recently_added_max_age_days: None,
             random_albums_limit: 1000,
             quality_categories: true,
         }

@@ -528,7 +528,7 @@ Name segments are **URL-safe base64** to avoid `/`, spaces, non-ASCII, etc.
 ├── "cat:ar"      Artist
 ├── "cat:al"      Album
 ├── "cat:gn"      Genre
-├── "cat:recent"  Recently Added       ← time-range submenus below (§6.4 / 6.7)
+├── "cat:recent"  Recently Added       ← flat album list (§6.7)
 ├── "cat:played"  Recently Played      ← stream-hit counting (§6.8)
 ├── "cat:random"  Random
 ├── "cat:hires"   Hi-Res Albums        ← quality category
@@ -536,22 +536,24 @@ Name segments are **URL-safe base64** to avoid `/`, spaces, non-ASCII, etc.
 └── "cat:mixed"   Mixed Quality        ← quality category
 ```
 
-`cat:recent` is **a time-range sub-container hierarchy** rather than a flat
-list:
+`cat:recent` returns an **album list directly**, sorted by
+`MAX(tracks.added_at) by album_id` DESC. Two settings cap what shows up:
 
-```
-"cat:recent" (object.container, "Recently Added")
-├── "cat:recent:day"      Last day        ← last 24h
-├── "cat:recent:week"     Last week       ← last 7d
-├── "cat:recent:month"    Last month      ← last 30d
-├── "cat:recent:3months"  Last 3 months   ← last 90d
-├── "cat:recent:year:YYYY"  YYYY year     ← per-year, only years with data
-└── "cat:recent:all"      Show All        ← everything
-```
+- `browse.recently_added_limit` — max items returned.
+- `browse.recently_added_max_age_days` — albums older than N days are
+  excluded. `null` (default) means no age cap (show everything by recency).
 
-**Dynamic hiding rule**: a wider range is hidden if its contents would equal a
-narrower one (e.g., if "Last week" contains exactly the same set as "Last
-day", "Last week" is hidden).
+Both are exposed via the config API (#13) so per-user tuning is one POST away.
+
+> **History**: prior versions of revolver exposed `cat:recent:day` /
+> `cat:recent:week` / `cat:recent:month` / `cat:recent:3months` /
+> `cat:recent:year:YYYY` / `cat:recent:all` sub-containers under
+> `cat:recent`, with a dynamic-hiding rule (a wider range was elided when its
+> COUNT matched the next-shorter range). On real-device usage (Linn) the
+> two-click cascade was friction without much value, so it was dropped in
+> issue #16. Old sub-container IDs no longer parse and a control point that
+> cached one gets "no such object" — control points re-fetch on the next
+> `SystemUpdateID` bump.
 
 **Design notes**:
 
@@ -641,39 +643,38 @@ Timing:
   (full reshuffle; new albums are not just appended, otherwise they would
   always end up at the bottom).
 
-### 6.7 Recently Added Time-Range Menu
+### 6.7 Recently Added
 
-The children of `cat:recent` are **a time-range sub-container hierarchy**
-rather than a flat list. The structure is shown in §6.2 / §6.3.
-
-Time bounds:
-
-| ObjectID | Lower (`m.aa >=`) | Upper |
-|---|---|---|
-| `cat:recent:day` | `now - 86400` | none |
-| `cat:recent:week` | `now - 7*86400` | none |
-| `cat:recent:month` | `now - 30*86400` | none |
-| `cat:recent:3months` | `now - 90*86400` | none |
-| `cat:recent:year:YYYY` | `strftime('%s', 'YYYY-01-01')` | `strftime('%s', 'YYYY+1-01-01') - 1` |
-| `cat:recent:all` | none | none |
-
-**Dynamic hiding rule** (applied in `browse_children(cat:recent)`):
-
-```
-1. COUNT(day) / COUNT(week) / COUNT(month) / COUNT(3months) in order.
-2. Among consecutive ranges with the same count, keep only the shortest.
-   Example: day=3, week=3, month=5 → show day and month, hide week.
-3. year:YYYY enumerates only years that contain at least one album (DISTINCT).
-4. "Show All" is always present.
-```
-
-`year:YYYY` enumeration query:
+The children of `cat:recent` are **a flat list of albums** sorted by recency:
 
 ```sql
-SELECT DISTINCT strftime('%Y', datetime(m.aa, 'unixepoch'))
-FROM (SELECT album_id, MAX(added_at) AS aa FROM tracks GROUP BY album_id) m
-ORDER BY 1 DESC LIMIT 10
+SELECT id, album, effective_album_artist, track_count
+FROM albums
+WHERE last_added_at IS NOT NULL
+  AND (?lower_bound IS NULL OR last_added_at >= ?lower_bound)
+ORDER BY last_added_at DESC, id DESC
+LIMIT ?count OFFSET ?start
 ```
+
+Two settings (both in `[browse]`, both editable via the config API of #13):
+
+| Setting | Default | Effect |
+|---|---|---|
+| `recently_added_limit` | `50` | Hard cap on items returned (also caps SOAP `RequestedCount`). |
+| `recently_added_max_age_days` | `null` (no cap) | Lower bound = `now - N*86400`. When `null` the WHERE clause has no age predicate. |
+
+`albums.last_added_at` is denormalized (`MAX(tracks.added_at) GROUP BY
+album_id`), bulk-recalced after every scan. Adding a new track to an
+existing album updates this field, so the album re-floats to the top of
+`cat:recent` — the "resurface on new track" behavior is preserved.
+
+> **History**: earlier versions exposed a sub-container hierarchy
+> (`cat:recent:day` / `week` / `month` / `3months` / `year:YYYY` / `all`)
+> with a dynamic-hiding rule. It was dropped in issue #16 after real-device
+> use on Linn showed the two-click cascade added friction without proportional
+> value. The denormalized `last_added_at` column was originally added to make
+> that hierarchy fast and is still useful as the single sort key for the flat
+> list.
 
 ### 6.8 Recently Played Implementation
 

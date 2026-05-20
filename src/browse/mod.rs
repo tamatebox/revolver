@@ -64,11 +64,6 @@ pub fn browse_metadata(ctx: &BrowseContext, id: &ObjectId) -> Result<DidlOutput>
         ObjectId::CatAl => Ok(single(plain_cat("cat:al", "0", "Album"))),
         ObjectId::CatGn => Ok(single(plain_cat("cat:gn", "0", "Genre"))),
         ObjectId::CatRecent => Ok(single(plain_cat("cat:recent", "0", "Recently Added"))),
-        ObjectId::CatRecentRange(r) => Ok(single(plain_cat(
-            &crate::upnp::object_id::encode(&ObjectId::CatRecentRange(*r)),
-            "cat:recent",
-            recent_range_title(*r).as_str(),
-        ))),
         ObjectId::CatPlayed => Ok(single(plain_cat("cat:played", "0", "Recently Played"))),
         ObjectId::CatRandom => Ok(single(plain_cat("cat:random", "0", "Random Albums"))),
         ObjectId::CatHires => Ok(single(plain_cat("cat:hires", "0", "Hi-Res Albums"))),
@@ -95,8 +90,7 @@ pub fn browse_children(
         ObjectId::CatAr => categories::artists_children(ctx, start, count),
         ObjectId::CatAl => categories::albums_children(ctx, start, count),
         ObjectId::CatGn => categories::genres_children(ctx, start, count),
-        ObjectId::CatRecent => recent::recent_root_children(ctx),
-        ObjectId::CatRecentRange(r) => recent::recent_range_children(ctx, *r, start, count),
+        ObjectId::CatRecent => recent::recent_root_children(ctx, start, count),
         ObjectId::CatPlayed => played::played_albums_children(ctx, start, count),
         ObjectId::CatRandom => random::random_albums_children(ctx, start, count),
         ObjectId::CatHires => {
@@ -119,19 +113,6 @@ pub fn browse_children(
             },
             total_matches: 0,
         }),
-    }
-}
-
-/// `cat:recent:<range>` container title for `BrowseMetadata` (SPEC §6.3).
-fn recent_range_title(r: crate::upnp::object_id::RecentRange) -> String {
-    use crate::upnp::object_id::RecentRange::*;
-    match r {
-        Day => "Last day".to_string(),
-        Week => "Last week".to_string(),
-        Month => "Last month".to_string(),
-        ThreeMonths => "Last 3 months".to_string(),
-        Year(y) => y.to_string(),
-        All => "Show All".to_string(),
     }
 }
 

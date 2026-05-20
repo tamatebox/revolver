@@ -56,6 +56,10 @@ pub struct Scan {
 #[derive(Debug, Deserialize)]
 pub struct Browse {
     pub recently_added_limit: usize,
+    /// Cap albums shown under `cat:recent` by age in days. `None` = no age
+    /// cap (show everything by recency). SPEC §6.7.
+    #[serde(default)]
+    pub recently_added_max_age_days: Option<u32>,
     pub random_albums_limit: usize,
     pub quality_categories: bool,
 

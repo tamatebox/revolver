@@ -23,6 +23,11 @@ parallel   = 8  # rayon thread count for tag reading
 
 [browse]
 recently_added_limit = 50
+
+# Hide albums older than N days from `cat:recent`. Commented out = no age cap
+# (show everything by recency). Editable at runtime via /admin/config.
+# recently_added_max_age_days = 90
+
 random_albums_limit  = 100
 
 # Surface the quality categories (Hi-Res / Lossy / Mixed) at the top level.
