@@ -441,33 +441,65 @@ Actions implemented:
 | `GetSystemUpdateID` | ◎ | Reads from `server_state`. |
 | `Search` | ○ | Minimal implementation (§5.4). |
 
-### 5.4 Minimal Search Implementation
+### 5.4 Search Implementation
 
-If `Search` is unsupported, the search bar in many control-point apps stops
-working, which hurts usability. A minimal implementation is included.
+The Search action is implemented to match the subset of the UPnP search
+grammar that real control points (notably Linn / Kazoo, observed via #4)
+actually send. The parser produces a tagged predicate tree; the dispatcher
+routes queries by the `upnp:class derivedfrom` filter and runs a `LIKE
+'%X%' COLLATE NOCASE` search against the appropriate table.
 
-- Supported properties: `dc:title`, `upnp:artist`, `upnp:album`.
-- Supported operator: `contains` (case-insensitive).
-- SearchCriteria parsing is intentionally limited (the full UPnP grammar is
-  not implemented).
-  - Example: `upnp:class derivedfrom "object.item.audioItem" and dc:title contains "shanti"`
-- For any unsupported SearchCriteria, the server returns an **empty result
-  set** rather than all tracks (preferring inaction to misbehavior).
-- `GetSearchCapabilities` truthfully lists supported properties, so well-
-  behaved clients avoid sending unsupported queries.
+**Supported grammar:**
 
-SQL mapping:
+- `upnp:class derivedfrom "OBJECT-CLASS"` — class filter. Recognized prefixes:
+  - `object.container.album...`              → Album search
+  - `object.container.person.musicArtist...` → Artist search
+  - `object.item.audioItem...`               → Track search
+- `contains` operator on `dc:title` / `upnp:album` / `upnp:artist` /
+  `upnp:genre`.
+- `upnp:artist[@role="Composer"]` (or any role) — the role string is
+  captured on the predicate but the SQL layer ignores it until #9 lands the
+  COMPOSER tag in scan.
+- `and`, `or`, parentheses — full AND/OR composition (Linn's Track / global
+  search uses an OR across the 4 fields).
+- `*` and the empty string are explicit no-ops (return empty without
+  hitting the DB).
 
-```sql
--- dc:title contains "X"
-SELECT * FROM tracks WHERE title LIKE '%X%' COLLATE NOCASE
+**Class-based dispatch** (the key behavior change from earlier minimal
+versions):
 
--- upnp:artist contains "X"
-SELECT * FROM tracks WHERE artist LIKE '%X%' COLLATE NOCASE
+| Class filter | Table queried | Returned objects |
+|---|---|---|
+| `Album`  | `albums` — `dc:title`/`upnp:album` map to `albums.album`, `upnp:artist` to `effective_album_artist` | `alb:{id}` containers |
+| `Artist` | `albums` — `dc:title`/`upnp:artist` map to `effective_album_artist` (distinct) | `aa:{base64}` containers |
+| `Track`  | `tracks JOIN albums` — `title`/`album`/`artist`/`genre` columns | track items |
+| `Any`    | Treated as Track | track items |
 
--- upnp:album contains "X"
-SELECT t.* FROM tracks t JOIN albums a ON t.album_id = a.id
-WHERE a.album LIKE '%X%' COLLATE NOCASE
+**Anything outside the supported subset** (unknown property, malformed
+quoting, unrecognized `derivedfrom` class) collapses to an empty result.
+Preferring inaction over misbehavior keeps control-point caches consistent.
+
+`GetSearchCapabilities` returns `dc:title,upnp:artist,upnp:album` — the
+properties most clients probe for. Well-behaved control points use it to
+decide what to send.
+
+**Example queries Linn DSM/2 sends (observed):**
+
+```text
+# Album field
+upnp:class derivedfrom "object.container.album" and dc:title contains "X"
+
+# Artist field
+upnp:class derivedfrom "object.container.person.musicArtist" and dc:title contains "X"
+
+# Track / global
+upnp:class derivedfrom "object.item.audioItem" and
+( dc:title contains "X" or upnp:album contains "X"
+  or upnp:artist contains "X" or upnp:genre contains "X" )
+
+# Composer
+upnp:class derivedfrom "object.container.person.musicArtist" and
+upnp:artist[@role="Composer"] contains "X"
 ```
 
 ### 5.5 ConnectionManager:1
