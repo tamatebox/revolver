@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>revolver admin</title>
+  <style>
+    :root {
+      --bg: #fafafa;
+      --card: #fff;
+      --border: #ddd;
+      --muted: #777;
+      --accent: #2563eb;
+      --danger: #b91c1c;
+      --code-bg: #f4f4f4;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      max-width: 820px;
+      margin: 2em auto;
+      padding: 0 1em;
+      background: var(--bg);
+      color: #222;
+    }
+    h1 { margin: 0 0 1em; font-size: 1.6em; }
+    h2 { margin: 0 0 0.6em; font-size: 1.1em; color: var(--muted); }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1em 1.25em;
+      margin-bottom: 1em;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      gap: 0.4em 1.5em;
+      font-variant-numeric: tabular-nums;
+    }
+    .grid > div:nth-child(odd) { color: var(--muted); }
+    button {
+      padding: 0.5em 1em;
+      margin-right: 0.5em;
+      cursor: pointer;
+      border: 1px solid var(--accent);
+      background: white;
+      color: var(--accent);
+      border-radius: 4px;
+      font-size: 0.95em;
+    }
+    button:hover:not(:disabled) { background: var(--accent); color: white; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    pre {
+      background: var(--code-bg);
+      padding: 1em;
+      border-radius: 4px;
+      overflow: auto;
+      max-height: 400px;
+      font-size: 0.85em;
+      margin-top: 0.75em;
+    }
+    .status { color: var(--muted); font-size: 0.85em; margin-left: 0.5em; }
+    .status.error { color: var(--danger); }
+  </style>
+</head>
+<body>
+  <h1>revolver <span class="status" id="poll-status">loading…</span></h1>
+
+  <div class="card">
+    <h2>Library</h2>
+    <div class="grid">
+      <div>Albums</div><div id="albums-total">–</div>
+      <div>Tracks</div><div id="tracks-total">–</div>
+      <div>Total duration</div><div id="total-duration">–</div>
+      <div>Plays total</div><div id="plays-total">–</div>
+      <div>Played albums</div><div id="played-albums-total">–</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Quality breakdown</h2>
+    <div class="grid" id="quality-grid"></div>
+  </div>
+
+  <div class="card">
+    <h2>Server</h2>
+    <div class="grid">
+      <div>system_update_id</div><div id="system-update-id">–</div>
+      <div>Uptime</div><div id="uptime">–</div>
+      <div>Last scan</div><div id="last-scan">–</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Actions</h2>
+    <button id="btn-rescan">Rescan library</button>
+    <button id="btn-reshuffle">Reshuffle random albums</button>
+    <button id="btn-show-report">Show last scan report</button>
+    <span class="status" id="action-status"></span>
+    <pre id="last-action-output" hidden></pre>
+  </div>
+
+  <script>
+    // Poll GET /admin/stats every 5 seconds and refresh the DOM.
+    // scan / reshuffle / scan-report just call the existing admin endpoints (SPEC §8.4).
+    const POLL_INTERVAL_MS = 5000;
+
+    function fmtDuration(ms) {
+      if (ms == null) return "–";
+      const totalSec = Math.floor(ms / 1000);
+      const h = Math.floor(totalSec / 3600);
+      const m = Math.floor((totalSec % 3600) / 60);
+      const s = totalSec % 60;
+      if (h > 0) return `${h}h ${m}m ${s}s`;
+      if (m > 0) return `${m}m ${s}s`;
+      return `${s}s`;
+    }
+
+    function fmtUptimeSeconds(sec) {
+      if (sec == null) return "–";
+      return fmtDuration(sec * 1000);
+    }
+
+    function fmtUnixTime(t) {
+      if (!t) return "–";
+      const d = new Date(t * 1000);
+      return d.toLocaleString();
+    }
+
+    async function fetchStats() {
+      const ps = document.getElementById("poll-status");
+      try {
+        const resp = await fetch("/admin/stats");
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const v = await resp.json();
+        document.getElementById("albums-total").textContent = v.albums_total;
+        document.getElementById("tracks-total").textContent = v.tracks_total;
+        document.getElementById("total-duration").textContent = fmtDuration(v.total_duration_ms);
+        document.getElementById("plays-total").textContent = v.plays_total;
+        document.getElementById("played-albums-total").textContent = v.played_albums_total;
+        document.getElementById("system-update-id").textContent = v.system_update_id;
+        document.getElementById("uptime").textContent = fmtUptimeSeconds(v.uptime_seconds);
+        if (v.last_scan) {
+          document.getElementById("last-scan").textContent =
+            `${fmtUnixTime(v.last_scan.completed_at)} (${v.last_scan.scan_id.slice(0, 8)}…)`;
+        } else {
+          document.getElementById("last-scan").textContent = "never";
+        }
+        // Render quality_breakdown in a fixed order.
+        const qg = document.getElementById("quality-grid");
+        qg.innerHTML = "";
+        for (const key of ["hires", "lossless", "lossy", "mixed", "unknown"]) {
+          const label = document.createElement("div");
+          label.textContent = key;
+          const val = document.createElement("div");
+          val.textContent = v.quality_breakdown[key] ?? 0;
+          qg.appendChild(label);
+          qg.appendChild(val);
+        }
+        ps.textContent = `updated ${new Date().toLocaleTimeString()}`;
+        ps.classList.remove("error");
+      } catch (e) {
+        ps.textContent = `error: ${e.message}`;
+        ps.classList.add("error");
+      }
+    }
+
+    async function postAction(button, url, label) {
+      const status = document.getElementById("action-status");
+      button.disabled = true;
+      status.textContent = `${label}…`;
+      status.classList.remove("error");
+      try {
+        const resp = await fetch(url, { method: "POST" });
+        const body = await resp.text();
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${body}`);
+        status.textContent = `${label} ok`;
+        // Refresh stats immediately on success (scan changes last_scan / counts).
+        fetchStats();
+      } catch (e) {
+        status.textContent = `${label} failed: ${e.message}`;
+        status.classList.add("error");
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function showScanReport() {
+      const out = document.getElementById("last-action-output");
+      const status = document.getElementById("action-status");
+      status.textContent = "loading scan report…";
+      status.classList.remove("error");
+      try {
+        const resp = await fetch("/admin/scan-report");
+        if (resp.status === 404) {
+          out.textContent = "(no scan run yet)";
+          out.hidden = false;
+          status.textContent = "";
+          return;
+        }
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const json = await resp.json();
+        out.textContent = JSON.stringify(json, null, 2);
+        out.hidden = false;
+        status.textContent = "";
+      } catch (e) {
+        status.textContent = `report fetch failed: ${e.message}`;
+        status.classList.add("error");
+      }
+    }
+
+    document.getElementById("btn-rescan").addEventListener("click", (e) => {
+      postAction(e.currentTarget, "/admin/rescan", "rescan");
+    });
+    document.getElementById("btn-reshuffle").addEventListener("click", (e) => {
+      postAction(e.currentTarget, "/admin/reshuffle", "reshuffle");
+    });
+    document.getElementById("btn-show-report").addEventListener("click", showScanReport);
+
+    // Initial fetch + start polling.
+    fetchStats();
+    setInterval(fetchStats, POLL_INTERVAL_MS);
+  </script>
+</body>
+</html>

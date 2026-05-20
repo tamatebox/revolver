@@ -1,0 +1,22 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Runtime artifacts
+*.db
+*.db-wal
+*.db-shm
+/data
+
+# Local config (template: config.toml.example)
+config.toml
+config.local.toml
+
+# curl test artifacts
+out_*.bin
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+*.swp

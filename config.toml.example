@@ -1,0 +1,37 @@
+# revolver configuration sample.
+# Copy this file to `config.toml` (or `config.local.toml`) and edit `library.root`.
+# See SPEC.md §12 for the authoritative schema.
+
+[server]
+friendly_name = "Listening Room Server"
+http_port     = 8200
+uuid          = "auto"  # generated on first run and persisted to server_state
+
+# HTTP server bind address (default: "0.0.0.0").
+# - "0.0.0.0" — reachable from the LAN (the typical SSDP-discovery setup)
+# - "127.0.0.1" — local only, for testing
+# **Not intended for direct exposure to the public Internet.** Run behind a firewall / NAT.
+# bind_address = "0.0.0.0"
+
+[library]
+root       = "/path/to/music"
+extensions = ["flac", "wav", "aiff", "aif", "m4a", "mp3"]
+
+[scan]
+on_startup = true
+parallel   = 8  # rayon thread count for tag reading
+
+[browse]
+recently_added_limit = 50
+random_albums_limit  = 100
+
+# Surface the quality categories (Hi-Res / Lossy / Mixed) at the top level.
+# Recommended on. Empty categories are hidden automatically.
+quality_categories = true
+
+# Decorate album titles with a quality tag (default off).
+# Example: "Album Name [Hi-Res 24/96]"
+quality_in_title         = false
+quality_in_title_format  = "[{q}]"                       # "{q}" is replaced by the label
+quality_in_title_include = ["hires", "lossy", "mixed"]   # CD-quality lossless is always unmarked
+quality_in_title_show_specs = true                       # include numeric specs like "Hi-Res 24/96"

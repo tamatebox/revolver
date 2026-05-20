@@ -1,0 +1,45 @@
+[package]
+name = "revolver"
+version = "0.1.0"
+edition = "2021"
+description = "A lightweight UPnP/DLNA MediaServer written in Rust"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+base64 = "0.22"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+lofty = "0.24"
+quick-xml = "0.36"
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+rand = "0.8"
+rayon = "1"
+# reqwest: keep-alive HTTP/1.1 client for sending GENA NOTIFY (SPEC §9.6).
+# Targets are LAN-only HTTP (gated by notify.rs:is_lan_host), so TLS is unnecessary.
+# default-features = false drops the OpenSSL/native-tls dependency and keeps the binary small.
+reqwest = { version = "0.12", default-features = false }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+socket2 = { version = "0.5", features = ["all"] }
+thiserror = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "fs", "io-util"] }
+tokio-util = { version = "0.7", features = ["io"] }
+toml = "0.8"
+tower = { version = "0.5", features = ["limit"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"
+proptest = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

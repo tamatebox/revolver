@@ -1,0 +1,13 @@
+target/
+.git/
+.github/
+.vscode/
+.idea/
+*.db
+*.db-wal
+*.db-shm
+config.toml
+config.local.toml
+data/
+out_*.bin
+.DS_Store

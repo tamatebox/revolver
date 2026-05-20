@@ -1,0 +1,20 @@
+# Example docker-compose for revolver.
+#
+# SSDP discovery requires LAN multicast, which works only with
+# `network_mode: host`. Docker Desktop on macOS / Windows runs containers
+# inside a Linux VM, so multicast cannot reach the host LAN — revolver in
+# Docker only works on Linux hosts.
+
+services:
+  revolver:
+    # Build from source ↓
+    build: .
+    # …or pull a pre-built image (uncomment after publishing to a registry):
+    # image: ghcr.io/<owner>/revolver:latest
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      # Mount your music library. Read-only is fine — revolver never writes here.
+      - /path/to/music:/music:ro
+      # Persistent data: SQLite DB, scan reports, server UUID, config.toml.
+      - ./data:/data
