@@ -18,7 +18,7 @@ cargo clippy --all-targets
 cargo fmt
 ```
 
-Admin UI: `http://localhost:8200/admin/ui` (scan / reshuffle / stats).
+Admin UI: `http://localhost:8200/admin/ui` (scan / reshuffle / stats / settings / scan progress).
 
 One-time per clone, enable the in-repo git hooks so `cargo fmt --check` + `cargo clippy -- -D warnings` run before every commit (same checks as CI):
 
@@ -34,7 +34,7 @@ Things you cannot grasp by reading one file:
 - **`effective_album_artist` is computed at scan time** and stored: `compilation` → "Various Artists"; else `album_artist` → `artist` → "Unknown Artist". Do not recompute in queries.
 - **`albums.quality` is bulk-UPDATEd after scan** (SPEC §4.6). Tiers: `flac/alac/pcm` + (>48kHz or >16bit) → `hires`; else `lossless` / `lossy` / `mixed` / `unknown`. Browse hits it via index.
 - **ObjectID stability is the cross-client compatibility key** (SPEC §6.1, §10.4). `alb:{album_id}` / `trk:{track_id}` are auto-increment based and permanent. `aa:{base64}` / `ar:` / `gn:` are URL-safe base64 of the name (`-` `_`, no padding). Never break IDs on rescan.
-- **`cat:recent` is a sub-container hierarchy by time range** (SPEC §6.7): `cat:recent:day|week|month|3months|year:YYYY|all`. Elision rules: hide a range whose COUNT equals the next-shorter range; hide COUNT=0; always show `:all`.
+- **`cat:recent` is a flat album list** (SPEC §6.7, #16). Sorted by `albums.last_added_at` DESC, capped by `browse.recently_added_limit` + optional `browse.recently_added_max_age_days`. The earlier time-range cascade (`day` / `week` / `year:YYYY` / `all`) was dropped after real-device use showed the two-click hop was friction without value. Future Views default to flat — avoid sub-container cascades.
 - **SystemUpdateID increments only on structural change** (SPEC §5.1). `scan::should_bump_system_update_id` decides; bump on scan complete + fan-out propchange NOTIFY to CD subscribers. Playback and random reshuffle do NOT bump (avoid trashing Linn's Browse cache). Currently also bumps on `tracks_updated > 0` — slightly over-bumpy but harmless.
 - **`added_at` = "when the server first saw this path"** (SPEC §4.2), not file btime. First scan: btime/mtime fallback. After: now(). Never overwrite on upsert. Recently Added orders by `MAX(added_at) by album_id`, so a new track on an existing album re-floats the album.
 - **Skip tag read when mtime matches** (SPEC §4.5). Reported as `tracks_unchanged`. Makes "unchanged rescan" finish in seconds.
@@ -49,6 +49,9 @@ Things you cannot grasp by reading one file:
 - **`BrowseContext` centralizes view-wide deps** (`conn` / `art_base_url` / `stream_base_url` / `random_state` / `now_secs`). The caller (`content_directory.rs`) injects the clock so tests are time-independent.
 - **Shutdown broadcasts via `tokio::sync::broadcast::channel::<()>(1)`** — deliberately avoiding `CancellationToken` for a single signal.
 - **SOAP fault = HTTP 500 + `<UPnPError>` body** (UPnP convention). Do not leak internal detail to clients; log via `tracing::error` only.
+- **`config.toml` is bootstrap-only; `config_overrides` table is the runtime source of truth** (#13). At startup, the toml values are captured as defaults; user edits go to `config_overrides` (JSON-valued KV), and `AppState.browse` is rebuilt from `catalog::build_browse_settings`. `GET/POST/DELETE /admin/config` drives this. The key catalog lives in `src/config_catalog.rs` — add new keys there with a `ReloadTier` (`Runtime` / `Reload` / `Restart`) and a validator.
+- **Search dispatches by `upnp:class derivedfrom`** (#5+#10, SPEC §5.4). The parser produces `ClassFilter + Predicate` tree (AND / OR / parens / `[@role="..."]`). Album-class returns `alb:{id}` containers, Artist-class returns `aa:{base64}` containers, Track-class returns track items via 4-field OR. `role` is captured but ignored at SQL until #9 lands COMPOSER.
+- **`ScanProgress` is a lock-free atomic snapshot** (#12). `scan::run` updates `phase` / `current` / `total` as it moves through walk → tag_read → upsert → postprocess. Tag-read phase spawns a 5-s ticker thread that polls every 500ms (short shutdown latency). `/admin/scan-progress` reads via `Atomic*::load`, no locks.
 
 ## Active pitfalls
 

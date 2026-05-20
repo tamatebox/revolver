@@ -9,15 +9,15 @@ Single binary, SQLite-backed, LAN-only.
 - **UPnP/DLNA discovery** — Announced over SSDP, visible to standard UPnP control points.
 - **Browse** — Top-level categories:
   - Album Artist / Artist / Album / Genre
-  - Recently Added (with time-range submenus: day / week / month / 3 months / per-year / all)
+  - Recently Added (flat album list, optionally capped by count + age in days)
   - Recently Played (counted by stream hits)
   - Random Albums (reshuffled on startup, after each scan, or on demand)
   - Hi-Res / Lossy / Mixed Quality
-- **Search** — `dc:title` / `upnp:artist` / `upnp:album` (case-insensitive `contains`).
+- **Search** — class-aware: Album search returns album containers, Artist search returns artist containers, Track / global search ORs across `dc:title` / `upnp:album` / `upnp:artist` / `upnp:genre`. Recognizes `upnp:class derivedfrom`, `and` / `or` / parens, and the `upnp:artist[@role="..."]` attribute filter.
 - **HTTP streaming with Range Request** — Strict support for all Range forms (`bytes=N-M`, `N-`, `-N` suffix). Gapless playback works.
 - **Album art** — Embedded artwork first, then folder images (`cover.*` / `folder.*` / `front.*` / etc., case-insensitive). On-demand extraction with a small in-memory cache.
 - **GENA events** — `SUBSCRIBE` / `NOTIFY` with `SystemUpdateID` auto-increment, so control points refresh automatically after rescans.
-- **Web admin UI** — Single-page UI at `/admin/ui` with scan trigger, reshuffle, and live stats. No external dependencies.
+- **Web admin UI** — Single-page UI at `/admin/ui` with scan trigger, reshuffle, live stats, in-flight scan progress, and runtime settings editor (backed by a REST config API). No external dependencies.
 
 ## Compatibility
 
@@ -72,11 +72,24 @@ Edit `config.toml`. The most relevant fields:
 | `library.extensions` | File extensions to scan |
 | `scan.on_startup` | Run a library scan on startup |
 | `scan.parallel` | Rayon thread count for tag reading |
-| `browse.recently_added_limit` | Cap for "Recently Added" |
+| `browse.recently_added_limit` | Item cap for "Recently Added" |
+| `browse.recently_added_max_age_days` | Optional age cap (omit / `null` = show all by recency) |
 | `browse.random_albums_limit` | Cap for "Random Albums" |
 | `browse.quality_categories` | Show Hi-Res / Lossy / Mixed top-level categories |
 
 See [`config.toml.example`](config.toml.example) for the full schema.
+
+The `[browse]` keys (and any future runtime-tier keys) can also be edited live via the admin UI (`/admin/ui` → Settings) or the REST API:
+
+```sh
+curl http://localhost:8200/admin/config                                # list with defaults / source / restart_required
+curl -X POST http://localhost:8200/admin/config \
+     -H content-type:application/json \
+     -d '{"browse.recently_added_limit": 100}'                         # partial update
+curl -X DELETE http://localhost:8200/admin/config/browse.recently_added_limit   # reset to toml default
+```
+
+`config.toml` is read once at startup as the initial defaults; user edits land in the SQLite-backed `config_overrides` table and persist across restarts.
 
 ## Security
 
