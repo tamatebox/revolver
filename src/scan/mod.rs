@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rusqlite::Connection;
@@ -9,9 +11,11 @@ use tracing::{debug, info, warn};
 
 use crate::db::{albums, state_kv, tracks};
 use crate::error::Result;
+use crate::scan::progress::{Phase, ScanProgress};
 use crate::scan::report::{Issue, ScanReport, ScanStats, SkippedEntry};
 
 pub mod matcher;
+pub mod progress;
 pub mod report;
 pub mod tagger;
 pub mod walker;
@@ -39,12 +43,14 @@ pub fn run(
     root: &Path,
     extensions: &[String],
     parallel: usize,
+    progress: Arc<ScanProgress>,
 ) -> Result<ScanReport> {
     let scan_id = ScanReport::new_id();
     let started = SystemTime::now();
     let started_secs = to_unix_secs(started);
 
     info!(scan_id = %scan_id, root = %root.display(), "scan started");
+    progress.begin_scan();
 
     let result = run_inner(
         conn,
@@ -54,10 +60,12 @@ pub fn run(
         &scan_id,
         started,
         started_secs,
+        &progress,
     );
     if let Err(ref e) = result {
         write_failure_report(conn, &scan_id, started, started_secs, &e.to_string());
     }
+    progress.finish();
     result
 }
 
@@ -107,6 +115,7 @@ fn run_inner(
     scan_id: &str,
     started: SystemTime,
     started_secs: i64,
+    progress: &Arc<ScanProgress>,
 ) -> Result<ScanReport> {
     // ── 1-2. walker ─────────────────────────────────────────────────────
     let walk_result = walker::walk(root, extensions);
@@ -155,7 +164,12 @@ fn run_inner(
     let (needs_tag_read_idx, tracks_unchanged) = partition_by_mtime(&path_mtime_pairs, &db_mtimes);
 
     // ── 6. Parallel tag read (only paths that changed) ─────────────
-    let tagged = parallel_tag_read(&enumerated, &needs_tag_read_idx, parallel);
+    let tagged = parallel_tag_read(
+        &enumerated,
+        &needs_tag_read_idx,
+        parallel,
+        Arc::clone(progress),
+    );
     let tag_read_failed = needs_tag_read_idx.len() - tagged.len();
 
     // ── Pre-count for albums_inserted ──────────────────────────────
@@ -171,7 +185,9 @@ fn run_inner(
     // checkpoint waits. Use batch commits of 1000 rows. 1000 is the typical
     // SQLite batch-efficiency peak (amortized prepare cost + single WAL fsync).
     const TX_CHUNK: usize = 1000;
-    for chunk in tagged.chunks(TX_CHUNK) {
+    progress.enter(Phase::Upsert, tagged.len());
+    let total_chunks = tagged.len().div_ceil(TX_CHUNK);
+    for (chunk_idx, chunk) in tagged.chunks(TX_CHUNK).enumerate() {
         let tx = conn.transaction()?;
         for t in chunk {
             // Issue detection (SPEC §4.7). Paths in the report are library_root-relative
@@ -255,7 +271,17 @@ fn run_inner(
             }
         }
         tx.commit()?;
+        progress.advance(chunk.len());
+        info!(
+            chunk = chunk_idx + 1,
+            total_chunks,
+            committed = progress.current(),
+            total = progress.total(),
+            "upsert chunk committed"
+        );
     }
+
+    progress.enter(Phase::Postprocess, 0);
 
     // Wrap post-processing (deletion detection / orphan cleanup / recompute)
     // in a separate transaction. Post-processing itself does a full-table scan
@@ -365,6 +391,7 @@ fn parallel_tag_read<'a>(
     enumerated: &'a [EnumeratedTrack],
     needs_idx: &[usize],
     parallel: usize,
+    progress: Arc<ScanProgress>,
 ) -> Vec<TaggedTrack<'a>> {
     // perf §P2: previously built `ThreadPoolBuilder::build()` per scan; now
     // memoized via `OnceLock`. Pool construction is sub-ms (not dominant),
@@ -380,12 +407,20 @@ fn parallel_tag_read<'a>(
             .expect("rayon thread pool")
     });
 
-    pool.install(|| {
+    progress.enter(Phase::TagRead, needs_idx.len());
+
+    // Ticker thread logs progress every 5s (#12). Stopped via `AtomicBool`
+    // after the rayon work completes. Shutdown takes up to one 5s tick — fine
+    // because this only runs during multi-minute scans.
+    let ticker_stop = Arc::new(AtomicBool::new(false));
+    let ticker_handle = spawn_progress_ticker(Arc::clone(&progress), Arc::clone(&ticker_stop));
+
+    let tagged = pool.install(|| {
         needs_idx
             .par_iter()
             .filter_map(|&i| {
                 let et = &enumerated[i];
-                match tagger::read(&et.path) {
+                let outcome = match tagger::read(&et.path) {
                     Ok(tags) => Some(TaggedTrack {
                         enumerated: et,
                         tags,
@@ -394,10 +429,61 @@ fn parallel_tag_read<'a>(
                         warn!(path = %et.path.display(), error = %e, "tag read failed");
                         None
                     }
-                }
+                };
+                progress.tick();
+                outcome
             })
             .collect()
-    })
+    });
+
+    ticker_stop.store(true, Ordering::Relaxed);
+    if let Some(h) = ticker_handle {
+        let _ = h.join();
+    }
+
+    tagged
+}
+
+/// Background thread that logs tag-read progress every 5s. Returns `None`
+/// when there is no work to track (avoids spawning a useless thread for
+/// trivially-empty rescans).
+///
+/// Polls `stop` every 500ms so shutdown latency stays bounded even if the
+/// scan completes between log windows (a fast rescan would otherwise block
+/// up to 5s in the join below).
+fn spawn_progress_ticker(
+    progress: Arc<ScanProgress>,
+    stop: Arc<AtomicBool>,
+) -> Option<std::thread::JoinHandle<()>> {
+    if progress.total() == 0 {
+        return None;
+    }
+    Some(std::thread::spawn(move || {
+        let log_interval = Duration::from_secs(5);
+        let poll_interval = Duration::from_millis(500);
+        let mut last_log = std::time::Instant::now();
+        loop {
+            std::thread::sleep(poll_interval);
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            if last_log.elapsed() < log_interval {
+                continue;
+            }
+            last_log = std::time::Instant::now();
+            let current = progress.current();
+            let total = progress.total();
+            if let Some(pct) = (current * 100).checked_div(total) {
+                info!(
+                    phase = progress.phase().as_str(),
+                    current,
+                    total,
+                    percent = pct,
+                    "scan progress"
+                );
+            }
+        }
+    }))
 }
 
 /// Return the relative path of `path` against the `root` prefix (security §6).
@@ -486,7 +572,14 @@ mod tests {
         let music = TempDir::new().unwrap();
         let extensions = vec!["flac".to_string()];
 
-        let report = run(&mut conn, music.path(), &extensions, 1).unwrap();
+        let report = run(
+            &mut conn,
+            music.path(),
+            &extensions,
+            1,
+            Arc::new(ScanProgress::new()),
+        )
+        .unwrap();
 
         assert_eq!(report.stats.tracks_deleted, 1);
         assert_eq!(report.stats.albums_deleted, 1);
@@ -570,7 +663,14 @@ mod tests {
 
         let music = TempDir::new().unwrap();
         let extensions = vec!["flac".to_string()];
-        let report = run(&mut conn, music.path(), &extensions, 1).unwrap();
+        let report = run(
+            &mut conn,
+            music.path(),
+            &extensions,
+            1,
+            Arc::new(ScanProgress::new()),
+        )
+        .unwrap();
         assert_eq!(report.stats.tracks_deleted, 1);
 
         let id: u32 = state_kv::get(&conn, "system_update_id")
@@ -670,7 +770,14 @@ mod tests {
         let mut conn = pool.get().unwrap();
         let music = TempDir::new().unwrap();
         let extensions = vec!["flac".to_string()];
-        let report = run(&mut conn, music.path(), &extensions, 1).unwrap();
+        let report = run(
+            &mut conn,
+            music.path(),
+            &extensions,
+            1,
+            Arc::new(ScanProgress::new()),
+        )
+        .unwrap();
         assert!(report.error.is_none());
         let json = state_kv::get(&conn, "last_scan_report").unwrap().unwrap();
         assert!(!json.contains("\"error\""));
@@ -687,7 +794,14 @@ mod tests {
         // Scan against empty library (insert 0, delete 0, update 0)
         let music = TempDir::new().unwrap();
         let extensions = vec!["flac".to_string()];
-        let report = run(&mut conn, music.path(), &extensions, 1).unwrap();
+        let report = run(
+            &mut conn,
+            music.path(),
+            &extensions,
+            1,
+            Arc::new(ScanProgress::new()),
+        )
+        .unwrap();
         assert_eq!(report.stats.tracks_inserted, 0);
         assert_eq!(report.stats.tracks_deleted, 0);
         assert_eq!(report.stats.tracks_updated, 0);

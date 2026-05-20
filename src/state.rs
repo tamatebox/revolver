@@ -74,6 +74,10 @@ pub struct AppState {
     /// Reshuffled on startup, scan completion, and `POST /admin/reshuffle`.
     pub random_state: Arc<RandomState>,
 
+    /// Live progress counter for an in-flight scan (#12). `Phase::Idle` when no
+    /// scan is running. Read by `/admin/scan-progress` without locks.
+    pub scan_progress: Arc<crate::scan::progress::ScanProgress>,
+
     /// Process start time (unix seconds). Used to compute uptime in
     /// `/admin/stats` (SPEC §8.5).
     pub started_at: i64,
@@ -174,6 +178,7 @@ pub mod test_helpers {
             notify_client: build_notify_client(),
             art_cache: Arc::new(ArtCache::new()),
             random_state: Arc::new(RandomState::new()),
+            scan_progress: Arc::new(crate::scan::progress::ScanProgress::new()),
             started_at: 0,
             ssdp_listener_active: Arc::new(AtomicBool::new(false)),
             ssdp_advertiser_active: Arc::new(AtomicBool::new(false)),

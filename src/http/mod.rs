@@ -39,6 +39,7 @@ pub const MAX_SOAP_BODY_BYTES: usize = 64 * 1024;
 pub fn router(state: AppState) -> Router {
     let admin_routes = Router::new()
         .route("/admin/scan-report", get(admin::scan_report))
+        .route("/admin/scan-progress", get(admin::scan_progress))
         .route("/admin/rescan", post(admin::rescan))
         .route("/admin/reshuffle", post(admin::reshuffle))
         .route("/admin/stats", get(admin::stats))

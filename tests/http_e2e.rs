@@ -84,6 +84,7 @@ async fn spawn_server() -> (SocketAddr, TempDir, NamedTempFile, i64) {
         scan_lock: Arc::new(Semaphore::new(1)),
         browse: Arc::new(RwLock::new(BrowseSettings::default())),
         config_defaults: Arc::new(std::collections::HashMap::new()),
+        scan_progress: Arc::new(revolver::scan::progress::ScanProgress::new()),
         uuid: Arc::new("E2E-UUID".to_string()),
         friendly_name: Arc::new("E2E Server".to_string()),
         http_port: 0,

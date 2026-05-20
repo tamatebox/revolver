@@ -54,10 +54,11 @@ pub async fn rescan(State(state): State<AppState>) -> Result<Json<ScanReport>, H
     let parallel = state.scan_parallel;
     let pool = state.db_pool.clone();
 
+    let progress = state.scan_progress.clone();
     let report = tokio::task::spawn_blocking(move || -> crate::error::Result<ScanReport> {
         let _permit = permit; // Hold the permit until the task completes.
         let mut conn = pool.get()?;
-        crate::scan::run(&mut conn, &library_root, &extensions, parallel)
+        crate::scan::run(&mut conn, &library_root, &extensions, parallel, progress)
     })
     .await
     .map_err(|e| HttpError::Internal(anyhow::Error::new(e)))??;
@@ -89,6 +90,14 @@ pub async fn rescan(State(state): State<AppState>) -> Result<Json<ScanReport>, H
 #[derive(Serialize)]
 pub struct ReshuffleResponse {
     pub shuffled: usize,
+}
+
+/// `GET /admin/scan-progress` — live counter for an in-flight scan (#12).
+/// Returns the idle snapshot when no scan is running.
+pub async fn scan_progress(
+    State(state): State<AppState>,
+) -> Json<crate::scan::progress::ScanProgressSnapshot> {
+    Json(state.scan_progress.snapshot())
 }
 
 /// Response body for `/admin/stats` (SPEC §8.5).

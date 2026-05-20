@@ -11,6 +11,7 @@ use uuid::Uuid;
 use revolver::art::ArtCache;
 use revolver::db::state_kv;
 use revolver::random::RandomState;
+use revolver::scan::progress::ScanProgress;
 use revolver::state::{build_notify_client, AppState};
 use revolver::{config, config_catalog, db, error, http, scan, ssdp, upnp};
 
@@ -101,6 +102,8 @@ async fn main() -> Result<()> {
         )?))
     };
 
+    let scan_progress = Arc::new(ScanProgress::new());
+
     let state = AppState {
         db_pool: pool.clone(),
         library_root: Arc::new(library_root),
@@ -118,6 +121,7 @@ async fn main() -> Result<()> {
         notify_client: notify_client.clone(),
         art_cache: Arc::new(ArtCache::new()),
         random_state: Arc::new(RandomState::new()),
+        scan_progress: scan_progress.clone(),
         started_at: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
@@ -150,11 +154,12 @@ async fn main() -> Result<()> {
             .await
             .map_err(|_| anyhow!("scan_lock semaphore closed unexpectedly during startup"))?;
         let scan_pool = pool.clone();
+        let progress = scan_progress.clone();
         let report =
             tokio::task::spawn_blocking(move || -> error::Result<scan::report::ScanReport> {
                 let _permit = permit;
                 let mut conn = scan_pool.get()?;
-                scan::run(&mut conn, &library_root, &extensions, parallel)
+                scan::run(&mut conn, &library_root, &extensions, parallel, progress)
             })
             .await
             .map_err(|e| anyhow!("startup scan spawn_blocking join failed: {e}"))??;
