@@ -5,7 +5,7 @@
 use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use rusqlite::params;
@@ -82,7 +82,8 @@ async fn spawn_server() -> (SocketAddr, TempDir, NamedTempFile, i64) {
         extensions: Arc::new(vec!["flac".to_string(), "bin".to_string()]),
         scan_parallel: 1,
         scan_lock: Arc::new(Semaphore::new(1)),
-        browse: Arc::new(BrowseSettings::default()),
+        browse: Arc::new(RwLock::new(BrowseSettings::default())),
+        config_defaults: Arc::new(std::collections::HashMap::new()),
         uuid: Arc::new("E2E-UUID".to_string()),
         friendly_name: Arc::new("E2E Server".to_string()),
         http_port: 0,

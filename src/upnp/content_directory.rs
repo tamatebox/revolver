@@ -70,13 +70,18 @@ fn handle_browse(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    let browse_settings = state
+        .browse
+        .read()
+        .map_err(|_| soap::SoapFault::internal_error())?
+        .clone();
     let ctx = BrowseContext {
         conn: &conn,
         art_base_url: &art_base,
         stream_base_url: &stream_base,
         random_state: &state.random_state,
         now_secs,
-        settings: &state.browse,
+        settings: &browse_settings,
     };
     let update_id = read_update_id(&conn).unwrap_or(0);
 
@@ -151,13 +156,18 @@ fn handle_search(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    let browse_settings = state
+        .browse
+        .read()
+        .map_err(|_| soap::SoapFault::internal_error())?
+        .clone();
     let ctx = BrowseContext {
         conn: &conn,
         art_base_url: &art_base,
         stream_base_url: &stream_base,
         random_state: &state.random_state,
         now_secs,
-        settings: &state.browse,
+        settings: &browse_settings,
     };
 
     let result = browse_search::search_tracks(&ctx, &expr, starting_index, count)

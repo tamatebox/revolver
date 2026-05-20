@@ -4,13 +4,14 @@ use axum::extract::{DefaultBodyLimit, Request};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get, post};
+use axum::routing::{any, delete, get, post};
 use axum::Router;
 use tower::limit::ConcurrencyLimitLayer;
 
 use crate::state::AppState;
 
 pub mod admin;
+pub mod admin_config;
 pub mod art;
 pub mod gena;
 pub mod soap_ctrl;
@@ -43,6 +44,14 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/stats", get(admin::stats))
         .route("/admin/ui", get(admin::ui))
         .route("/admin/", get(admin::ui))
+        .route(
+            "/admin/config",
+            get(admin_config::get_config).post(admin_config::post_config),
+        )
+        .route(
+            "/admin/config/{key}",
+            delete(admin_config::delete_config_key),
+        )
         .layer(middleware::from_fn(admin_csrf_guard));
 
     // /control/* is SOAP-envelope-only, so cap body at 64KB (security §P2).

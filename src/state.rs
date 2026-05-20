@@ -1,7 +1,7 @@
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use tokio::sync::Semaphore;
 
@@ -37,8 +37,16 @@ pub struct AppState {
     /// `Semaphore::new(1)`. Prevents concurrent scans via `try_acquire_owned`.
     pub scan_lock: Arc<Semaphore>,
 
-    /// Tuning values from `[browse]`.
-    pub browse: Arc<BrowseSettings>,
+    /// Tuning values from `[browse]`. Wrapped in an `RwLock` so the config API
+    /// (#13) can swap in updated values without restarting the process. Read in
+    /// the SOAP path on every Browse / Search; cloned to a local snapshot to
+    /// keep the lock window tiny.
+    pub browse: Arc<RwLock<BrowseSettings>>,
+
+    /// Snapshot of toml defaults for every catalog key (`config_catalog::CATALOG`),
+    /// captured at startup. The config API uses it to report `"default"` /
+    /// `"source"` alongside effective values. Immutable after startup.
+    pub config_defaults: Arc<crate::config_catalog::DefaultsMap>,
 
     // ── UPnP / SSDP ─────────────────────────────────────────────
     /// Device UUID (persisted in `server_state.uuid`, generated on first run).
@@ -129,7 +137,7 @@ pub mod test_helpers {
 
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use tempfile::TempDir;
     use tokio::sync::Semaphore;
@@ -155,7 +163,8 @@ pub mod test_helpers {
             extensions: Arc::new(vec!["flac".to_string()]),
             scan_parallel: 1,
             scan_lock: Arc::new(Semaphore::new(1)),
-            browse: Arc::new(BrowseSettings::default()),
+            browse: Arc::new(RwLock::new(BrowseSettings::default())),
+            config_defaults: Arc::new(std::collections::HashMap::new()),
             uuid: Arc::new("TEST-UUID".to_string()),
             friendly_name: Arc::new("Test Server".to_string()),
             http_port: 8200,

@@ -5,6 +5,7 @@ use r2d2_sqlite::SqliteConnectionManager;
 use crate::error::Result;
 
 pub mod albums;
+pub mod config_overrides;
 pub mod schema;
 pub mod state_kv;
 pub mod tracks;

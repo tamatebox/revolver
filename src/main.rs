@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
@@ -11,8 +11,8 @@ use uuid::Uuid;
 use revolver::art::ArtCache;
 use revolver::db::state_kv;
 use revolver::random::RandomState;
-use revolver::state::{build_notify_client, AppState, BrowseSettings};
-use revolver::{config, db, error, http, scan, ssdp, upnp};
+use revolver::state::{build_notify_client, AppState};
+use revolver::{config, config_catalog, db, error, http, scan, ssdp, upnp};
 
 #[derive(Debug, Parser)]
 #[command(name = "revolver", version, about = "UPnP MediaServer for Linn DSM/2")]
@@ -90,11 +90,16 @@ async fn main() -> Result<()> {
     let ssdp_listener_active = Arc::new(AtomicBool::new(false));
     let ssdp_advertiser_active = Arc::new(AtomicBool::new(false));
 
-    let browse_settings = Arc::new(BrowseSettings::from_parts(
-        cfg.browse.recently_added_limit,
-        cfg.browse.random_albums_limit,
-        cfg.browse.quality_categories,
-    ));
+    // Layer saved config_overrides (#13) on top of the toml defaults so the
+    // process starts with the user's last-saved values.
+    let config_defaults = Arc::new(config_catalog::precompute_defaults(&cfg));
+    let browse_settings = {
+        let conn = pool.get()?;
+        Arc::new(RwLock::new(config_catalog::build_browse_settings(
+            &config_defaults,
+            &conn,
+        )?))
+    };
 
     let state = AppState {
         db_pool: pool.clone(),
@@ -103,6 +108,7 @@ async fn main() -> Result<()> {
         scan_parallel: cfg.scan.parallel,
         scan_lock: Arc::new(Semaphore::new(1)),
         browse: browse_settings,
+        config_defaults: config_defaults.clone(),
         uuid: Arc::new(uuid),
         friendly_name: Arc::new(cfg.server.friendly_name.clone()),
         http_port: cfg.server.http_port,

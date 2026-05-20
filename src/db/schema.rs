@@ -10,7 +10,7 @@ use crate::error::Result;
 /// would silently corrupt data).
 ///
 /// Bump by +1 whenever a column is added or removed.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Table definitions from SPEC §3.1. Idempotent via `CREATE ... IF NOT EXISTS`.
 const SCHEMA_SQL: &str = r#"
@@ -66,6 +66,14 @@ CREATE INDEX IF NOT EXISTS idx_trk_added  ON tracks(added_at DESC);
 CREATE TABLE IF NOT EXISTS server_state (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
+);
+
+-- User-editable settings layered over `config.toml` defaults (#13).
+-- `value` holds a JSON-encoded scalar/array so non-string types round-trip.
+CREATE TABLE IF NOT EXISTS config_overrides (
+  key        TEXT    PRIMARY KEY,
+  value      TEXT    NOT NULL,
+  updated_at INTEGER NOT NULL
 );
 "#;
 

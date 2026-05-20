@@ -6,6 +6,7 @@
 pub mod art;
 pub mod browse;
 pub mod config;
+pub mod config_catalog;
 pub mod db;
 pub mod error;
 pub mod http;
