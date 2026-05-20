@@ -391,7 +391,9 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         // After reshuffle, system_update_id remains 42.
         let conn = pool.get().unwrap();
-        let id = db::state_kv::get(&conn, "system_update_id").unwrap().unwrap();
+        let id = db::state_kv::get(&conn, "system_update_id")
+            .unwrap()
+            .unwrap();
         assert_eq!(id, "42", "reshuffle must not bump system_update_id");
     }
 

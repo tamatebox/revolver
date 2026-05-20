@@ -255,7 +255,15 @@ mod tests {
         assert!(!ids.contains(&"cat:lossy"));
         assert!(!ids.contains(&"cat:mixed"));
         // The remaining 7 are required.
-        for expected in ["cat:aa", "cat:ar", "cat:al", "cat:gn", "cat:recent", "cat:played", "cat:random"] {
+        for expected in [
+            "cat:aa",
+            "cat:ar",
+            "cat:al",
+            "cat:gn",
+            "cat:recent",
+            "cat:played",
+            "cat:random",
+        ] {
             assert!(ids.contains(&expected), "missing {}", expected);
         }
     }

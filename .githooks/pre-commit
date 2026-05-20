@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Mirrors the CI checks in .github/workflows/ci.yml so failures surface
+# locally before they reach CI. Bypass with `git commit --no-verify` if
+# you really need to (don't make a habit of it).
+set -euo pipefail
+
+echo "[pre-commit] cargo fmt --all -- --check"
+cargo fmt --all -- --check
+
+echo "[pre-commit] cargo clippy --all-targets -- -D warnings"
+cargo clippy --all-targets -- -D warnings

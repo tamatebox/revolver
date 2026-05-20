@@ -595,7 +595,11 @@ mod tests {
         )
         .unwrap();
         // 3 tracks with added_at = 100, 500, 300
-        for (path, added) in [("/m/a.flac", 100i64), ("/m/b.flac", 500), ("/m/c.flac", 300)] {
+        for (path, added) in [
+            ("/m/a.flac", 100i64),
+            ("/m/b.flac", 500),
+            ("/m/c.flac", 300),
+        ] {
             conn.execute(
                 "INSERT INTO tracks (album_id, path, added_at, mtime, codec, mime_type, file_size,
                                      duration_ms)

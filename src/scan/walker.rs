@@ -245,7 +245,11 @@ mod tests {
         touch(tmp.path(), "🎵 favorites/track.flac", b"audio");
         touch(tmp.path(), "Björk - Vespertine/01.flac", b"audio");
         let r = walk(tmp.path(), &extensions());
-        assert_eq!(r.audio_files.len(), 3, "unicode filenames must be collected");
+        assert_eq!(
+            r.audio_files.len(),
+            3,
+            "unicode filenames must be collected"
+        );
         // Every file is reachable as a real object (canonicalize succeeds on UTF-8)
         for path in &r.audio_files {
             assert!(path.exists(), "discovered path should exist: {:?}", path);

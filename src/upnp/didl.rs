@@ -300,7 +300,11 @@ mod tests {
         };
         let xml = build_didl(&[c], &[]);
         // Control chars are dropped, yielding "ABCD\tE\nF".
-        assert!(xml.contains("<dc:title>ABCD\tE\nF</dc:title>"), "got: {}", xml);
+        assert!(
+            xml.contains("<dc:title>ABCD\tE\nF</dc:title>"),
+            "got: {}",
+            xml
+        );
         assert!(!xml.contains('\x00'));
         assert!(!xml.contains('\x07'));
         assert!(!xml.contains('\x1F'));

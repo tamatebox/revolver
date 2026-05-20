@@ -147,8 +147,8 @@ pub mod test_helpers {
         let pool = db::pool(&dbdir.path().join("test.db")).unwrap();
         // Canonicalize library_root just like production
         // (so path_within_library tests do not break on macOS /tmp -> /private/tmp).
-        let library_root = std::fs::canonicalize(dbdir.path())
-            .unwrap_or_else(|_| dbdir.path().to_path_buf());
+        let library_root =
+            std::fs::canonicalize(dbdir.path()).unwrap_or_else(|_| dbdir.path().to_path_buf());
         let state = AppState {
             db_pool: pool,
             library_root: Arc::new(library_root),
@@ -177,8 +177,8 @@ pub mod test_helpers {
     pub fn test_state_with_library() -> (AppState, TempDir, TempDir) {
         let (mut state, dbdir) = test_state();
         let libdir = TempDir::new().unwrap();
-        let canonical_lib = std::fs::canonicalize(libdir.path())
-            .unwrap_or_else(|_| PathBuf::from(libdir.path()));
+        let canonical_lib =
+            std::fs::canonicalize(libdir.path()).unwrap_or_else(|_| PathBuf::from(libdir.path()));
         state.library_root = Arc::new(canonical_lib);
         (state, dbdir, libdir)
     }

@@ -80,7 +80,12 @@ mod tests {
 
     fn ctx_with<'a>(conn: &'a Connection, rs: &'a RandomState) -> BrowseContext<'a> {
         static BS: std::sync::OnceLock<crate::state::BrowseSettings> = std::sync::OnceLock::new();
-        default_ctx(conn, rs, BS.get_or_init(crate::state::BrowseSettings::default), 0)
+        default_ctx(
+            conn,
+            rs,
+            BS.get_or_init(crate::state::BrowseSettings::default),
+            0,
+        )
     }
 
     #[test]

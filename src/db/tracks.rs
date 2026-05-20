@@ -364,7 +364,12 @@ mod tests {
         for i in 0..1000 {
             upsert(
                 &conn,
-                &sample(aid, Box::leak(format!("/m/file{}.flac", i).into_boxed_str()), 100, 200),
+                &sample(
+                    aid,
+                    Box::leak(format!("/m/file{}.flac", i).into_boxed_str()),
+                    100,
+                    200,
+                ),
             )
             .unwrap();
         }

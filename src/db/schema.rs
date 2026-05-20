@@ -124,17 +124,16 @@ pub fn ensure_compatible_or_err(conn: &Connection) -> Result<()> {
         return Ok(());
     }
 
-    let recorded: Option<u32> = state_kv::get(conn, "schema_version")?
-        .and_then(|s| s.parse().ok());
+    let recorded: Option<u32> = state_kv::get(conn, "schema_version")?.and_then(|s| s.parse().ok());
     if let Some(v) = recorded {
         if v > SCHEMA_VERSION {
-            return Err(crate::error::Error::Sqlite(rusqlite::Error::ToSqlConversionFailure(
-                Box::new(std::io::Error::other(format!(
+            return Err(crate::error::Error::Sqlite(
+                rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(format!(
                     "DB schema_version {} is newer than this binary's SCHEMA_VERSION {}; \
                      refusing to start (would silently corrupt data on downgrade)",
                     v, SCHEMA_VERSION
-                ))),
-            )));
+                )))),
+            ));
         }
     }
     Ok(())

@@ -125,10 +125,8 @@ mod tests {
     fn u5_matches_st_with_unrelated_target_returns_false() {
         let uuid = "X";
         // Must not respond to another service's ST.
-        assert!(!NtTarget::ContentDirectoryService.matches_st(
-            "urn:schemas-upnp-org:service:ConnectionManager:1",
-            uuid
-        ));
+        assert!(!NtTarget::ContentDirectoryService
+            .matches_st("urn:schemas-upnp-org:service:ConnectionManager:1", uuid));
         assert!(!NtTarget::Uuid.matches_st("upnp:rootdevice", uuid));
         // A completely unknown ST.
         assert!(!NtTarget::RootDevice.matches_st("urn:bogus:service:Foo:1", uuid));

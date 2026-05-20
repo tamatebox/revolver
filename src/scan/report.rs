@@ -109,7 +109,11 @@ mod tests {
             error: None,
         };
         let json = serde_json::to_string(&report).unwrap();
-        assert!(!json.contains("\"error\""), "error key should be omitted: {}", json);
+        assert!(
+            !json.contains("\"error\""),
+            "error key should be omitted: {}",
+            json
+        );
     }
 
     #[test]

@@ -46,7 +46,15 @@ pub fn run(
 
     info!(scan_id = %scan_id, root = %root.display(), "scan started");
 
-    let result = run_inner(conn, root, extensions, parallel, &scan_id, started, started_secs);
+    let result = run_inner(
+        conn,
+        root,
+        extensions,
+        parallel,
+        &scan_id,
+        started,
+        started_secs,
+    );
     if let Err(ref e) = result {
         write_failure_report(conn, &scan_id, started, started_secs, &e.to_string());
     }
@@ -100,7 +108,6 @@ fn run_inner(
     started: SystemTime,
     started_secs: i64,
 ) -> Result<ScanReport> {
-
     // ── 1-2. walker ─────────────────────────────────────────────────────
     let walk_result = walker::walk(root, extensions);
     let files_enumerated = walk_result.audio_files.len() + walk_result.skipped.len();
@@ -601,11 +608,7 @@ mod tests {
         db.insert("/m/a.flac".to_string(), 100);
         db.insert("/m/b.flac".to_string(), 200);
         // /a matches db mtime → skip, /b mismatched → re-read, /c new → re-read
-        let enumerated = vec![
-            ("/m/a.flac", 100i64),
-            ("/m/b.flac", 999),
-            ("/m/c.flac", 50),
-        ];
+        let enumerated = vec![("/m/a.flac", 100i64), ("/m/b.flac", 999), ("/m/c.flac", 50)];
         let (needs, unchanged) = partition_by_mtime(&enumerated, &db);
         assert_eq!(unchanged, 1);
         assert_eq!(needs, vec![1, 2]);
@@ -652,7 +655,10 @@ mod tests {
         let json = state_kv::get(&conn, "last_scan_report").unwrap().unwrap();
         assert!(json.contains(r#""scan_id":"scan-xyz""#));
         assert!(json.contains(r#""error":"boom!""#));
-        assert!(!json.contains("\"ok\":true"), "old report must be overwritten");
+        assert!(
+            !json.contains("\"ok\":true"),
+            "old report must be overwritten"
+        );
     }
 
     #[test]

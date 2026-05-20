@@ -92,7 +92,10 @@ pub async fn send_notify(
             reqwest::header::CONTENT_TYPE,
             HeaderValue::from_static("text/xml; charset=\"utf-8\""),
         )
-        .header(HeaderName::from_static("nt"), HeaderValue::from_static("upnp:event"))
+        .header(
+            HeaderName::from_static("nt"),
+            HeaderValue::from_static("upnp:event"),
+        )
         .header(
             HeaderName::from_static("nts"),
             HeaderValue::from_static("upnp:propchange"),

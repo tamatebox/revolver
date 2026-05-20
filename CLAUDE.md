@@ -20,6 +20,12 @@ cargo fmt
 
 Admin UI: `http://localhost:8200/admin/ui` (scan / reshuffle / stats).
 
+One-time per clone, enable the in-repo git hooks so `cargo fmt --check` + `cargo clippy -- -D warnings` run before every commit (same checks as CI):
+
+```sh
+git config core.hooksPath .githooks
+```
+
 ## Key design decisions
 
 Things you cannot grasp by reading one file:

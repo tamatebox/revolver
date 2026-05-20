@@ -72,7 +72,8 @@ async fn spawn_server() -> (SocketAddr, TempDir, NamedTempFile, i64) {
 
     // Canonicalize library_root just like production
     // (so path_within_library checks do not break on macOS /tmp -> /private/tmp).
-    let library_root = std::fs::canonicalize(dbdir.path()).unwrap_or_else(|_| dbdir.path().to_path_buf());
+    let library_root =
+        std::fs::canonicalize(dbdir.path()).unwrap_or_else(|_| dbdir.path().to_path_buf());
     let state = AppState {
         db_pool: pool,
         library_root: Arc::new(library_root),

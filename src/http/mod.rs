@@ -106,7 +106,11 @@ async fn admin_csrf_guard(request: Request, next: Next) -> Response {
                 origin = %origin,
                 "rejecting /admin/* request from non-LAN origin (CSRF defense)"
             );
-            return (StatusCode::FORBIDDEN, "admin endpoints restricted to LAN origins").into_response();
+            return (
+                StatusCode::FORBIDDEN,
+                "admin endpoints restricted to LAN origins",
+            )
+                .into_response();
         }
     }
     next.run(request).await

@@ -144,15 +144,14 @@ async fn main() -> Result<()> {
             .await
             .map_err(|_| anyhow!("scan_lock semaphore closed unexpectedly during startup"))?;
         let scan_pool = pool.clone();
-        let report = tokio::task::spawn_blocking(
-            move || -> error::Result<scan::report::ScanReport> {
+        let report =
+            tokio::task::spawn_blocking(move || -> error::Result<scan::report::ScanReport> {
                 let _permit = permit;
                 let mut conn = scan_pool.get()?;
                 scan::run(&mut conn, &library_root, &extensions, parallel)
-            },
-        )
-        .await
-        .map_err(|e| anyhow!("startup scan spawn_blocking join failed: {e}"))??;
+            })
+            .await
+            .map_err(|e| anyhow!("startup scan spawn_blocking join failed: {e}"))??;
         tracing::info!(
             scan_id = %report.scan_id,
             duration_ms = report.duration_ms,

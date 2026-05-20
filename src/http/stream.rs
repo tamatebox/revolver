@@ -147,7 +147,8 @@ fn bump_play_stats(state: &AppState, track_id: i64) {
                         |r| r.get(0),
                     );
                     if let Ok(aid) = album_id {
-                        if let Err(e) = crate::db::albums::bump_album_last_played_at(&conn, aid, now)
+                        if let Err(e) =
+                            crate::db::albums::bump_album_last_played_at(&conn, aid, now)
                         {
                             tracing::warn!(track_id, album_id = aid, error = %e,
                                 "failed to bump album last_played_at");
