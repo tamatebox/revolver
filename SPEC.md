@@ -259,8 +259,30 @@ ON CONFLICT(path) DO UPDATE SET
 
 - At server startup (initial run, or when `on_startup = true`).
 - Manual trigger via `POST /admin/rescan`.
-- File-system watching (`inotify` / `FSEvents`) is **not implemented**: does
-  not work on NAS mounts, and the complexity is not warranted.
+- **File-system watching** (`scan.watch`, §12): on local filesystems, watch
+  `library.root` via the `notify` crate
+  (`inotify` / `FSEvents` / `ReadDirectoryChangesW`) and trigger a rescan after
+  a 5-second debounce (so bulk imports collapse into a single scan). On
+  network filesystems (NFS / SMB / CIFS / FUSE) the watcher is automatically
+  disabled because events are not reliably delivered; fall back to
+  `rescan_interval_minutes` or manual rescan. Backend errors are logged and
+  demoted to `watch_status = "error"` (never panic). Watch status is exposed
+  via `/admin/stats` (§8.5).
+- **Periodic rescan** (`scan.rescan_interval_minutes`, §12): runs a full scan
+  on the configured interval. Set to `0` to disable. Useful as a fallback when
+  watching is unavailable.
+
+**NAS detection**: at startup, `statfs(2)` (`GetDriveType` on Windows) is
+called on `library.root`. The filesystem is classified as "network" if:
+
+| OS | Indicator |
+|---|---|
+| Linux | `f_type` ∈ {`NFS_SUPER_MAGIC` 0x6969, `SMB_SUPER_MAGIC` 0x517B, `CIFS_MAGIC_NUMBER` 0xFF534D42, `FUSE_SUPER_MAGIC` 0x65735546} |
+| macOS | `f_fstypename` ∈ {`smbfs`, `nfs`, `webdav`, `afpfs`} |
+| Windows | `GetDriveType` returns `DRIVE_REMOTE` |
+
+**Symlinks**: only paths under `library.root` are watched. Symlink targets
+outside the root are not watched — rely on the next periodic / manual rescan.
 
 ### 4.5 Incremental Scan Optimization
 
@@ -897,7 +919,8 @@ Endpoint: `GET /art/{album_id}?v={version}`.
   },
   "scan": {
     "last_full_scan_at": 1716800000,
-    "last_scan_duration_ms": 32145
+    "last_scan_duration_ms": 32145,
+    "watch_status": "active"  // "active" | "disabled_nas" | "disabled_config" | "error"
   },
   "runtime": {
     "uptime_seconds": 86400,
@@ -1119,6 +1142,16 @@ extensions = ["flac", "wav", "aiff", "aif", "m4a", "mp3"]
 on_startup = true
 parallel = 8  # rayon thread count
 
+# File-system watching (§4.4).
+# "auto"     → enabled on local FS, disabled on NAS (NFS / SMB / CIFS / FUSE).
+# "enabled"  → force on (use if you trust your NAS's event delivery).
+# "disabled" → force off.
+watch = "auto"
+
+# Periodic full rescan in minutes. 0 disables.
+# Useful as a fallback when `watch` is disabled (e.g., on a NAS).
+rescan_interval_minutes = 0
+
 [browse]
 recently_added_limit = 50
 random_albums_limit = 100
@@ -1169,7 +1202,9 @@ quality_in_title_show_specs = true           # include numeric specs like "Hi-Re
 - Verify gapless playback on additional renderers (real-hardware testing).
 - Memory and startup-time tuning.
 - Error-handling polish; structured logging refinements.
-- Configurable scan interval (`scan_interval_minutes`) for periodic rescans.
+- File-system watching with NAS auto-detection and configurable periodic
+  rescan (`scan.watch`, `scan.rescan_interval_minutes`; spec'd in §4.4 / §8.5
+  / §12, not yet implemented).
 - `dc:title` quality decoration (opt-in, §10.5).
 - Composer / Conductor / Orchestra facet (for classical libraries).
 - Year facet.
