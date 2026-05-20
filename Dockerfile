@@ -13,6 +13,7 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs && \
 # Build the actual binary.
 COPY src ./src
 COPY tests ./tests
+COPY assets ./assets
 RUN touch src/main.rs && cargo build --release
 
 # Runtime stage
