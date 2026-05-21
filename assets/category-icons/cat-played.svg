@@ -1,16 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- revolver — category icon for `cat:played` (Recently Played). Counterclockwise arrow + play triangle. -->
+<!-- revolver — category icon for `cat:played` (Recently Played). Smaller play triangle (so the corner badge isn't overwhelmed) + larger orange counterclockwise arc in the upper-right. The pair reads "play + history". -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" shape-rendering="geometricPrecision">
   <rect x="2" y="2" width="116" height="116" rx="24" fill="#ede4d0"/>
   <rect x="2" y="2" width="116" height="116" rx="24" fill="none" stroke="#c8bea4" stroke-width="0.8"/>
 
-  <!-- Counterclockwise arc (3/4 of a circle, open at top-right) -->
-  <path d="M 86 38
-           A 32 32 0 1 0 92 60"
-        fill="none" stroke="#161616" stroke-width="7" stroke-linecap="round"/>
-  <!-- Arrowhead pointing up at the open end -->
-  <path d="M 86 38 L 78 30 L 78 46 Z" fill="#161616"/>
+  <!-- Play triangle (centered, slightly smaller to leave room for the badge) -->
+  <path d="M 34 38 L 34 90 L 78 64 Z" fill="#161616"/>
 
-  <!-- Play triangle in the center (orange) -->
-  <path d="M 52 48 L 52 72 L 74 60 Z" fill="#d6651f"/>
+  <!-- Orange counterclockwise arc + arrowhead in the upper-right corner.
+       Larger and thicker than before so it carries comparable visual weight
+       to the play triangle. -->
+  <path d="M 102 18
+           A 18 18 0 1 0 88 38"
+        fill="none" stroke="#d6651f" stroke-width="7" stroke-linecap="round"/>
+  <path d="M 102 18 L 94 10 L 110 14 Z" fill="#d6651f"/>
 </svg>

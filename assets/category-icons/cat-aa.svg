@@ -1,21 +1,28 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- revolver — category icon for `cat:aa` (Album Artist). Person silhouette + microphone. -->
+<!-- revolver — category icon for `cat:aa` (Album Artist). Single clean person silhouette + a smaller orange star badge on the chest (lapel-pin sized, not parade-uniform). -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" shape-rendering="geometricPrecision">
   <rect x="2" y="2" width="116" height="116" rx="24" fill="#ede4d0"/>
   <rect x="2" y="2" width="116" height="116" rx="24" fill="none" stroke="#c8bea4" stroke-width="0.8"/>
 
-  <!-- Person: head + shoulders -->
+  <!-- Single person silhouette — head sits flush on the shoulder arch -->
   <g fill="#161616">
-    <circle cx="52" cy="44" r="14"/>
-    <path d="M 28 96
-             C 28 76, 76 76, 76 96 Z"/>
+    <circle cx="60" cy="44" r="16"/>
+    <path d="M 22 100
+             C 22 64, 98 64, 98 100 Z"/>
   </g>
 
-  <!-- Microphone: handle (diagonal) + capsule top, off to the right -->
-  <g fill="#161616">
-    <rect x="74" y="56" width="6" height="34" rx="2" transform="rotate(20 77 73)"/>
-    <ellipse cx="86" cy="46" rx="10" ry="13" transform="rotate(20 86 46)"/>
+  <!-- Lapel-pin sized orange star (~50% of the previous size). -->
+  <g transform="translate(60 85) scale(0.5)">
+    <path d="M 0 -12
+             L 3.5 -3.7
+             L 12.4 -3
+             L 5.7 3.1
+             L 7.8 11.7
+             L 0 7
+             L -7.8 11.7
+             L -5.7 3.1
+             L -12.4 -3
+             L -3.5 -3.7 Z"
+          fill="#d6651f"/>
   </g>
-  <!-- Orange highlight on mic capsule -->
-  <ellipse cx="88" cy="46" rx="3" ry="4" transform="rotate(20 88 46)" fill="#d6651f"/>
 </svg>

@@ -1,18 +1,32 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- revolver — category icon for `cat:random` (Random Albums). Crossing shuffle arrows. -->
+<!-- revolver — category icon for `cat:random` (Random Albums). Lucide-style shuffle: one full "over" path + two "under" stubs (no halo trick). Strokes and chevrons tightened to leave more cream breathing room around the marks. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" shape-rendering="geometricPrecision">
   <rect x="2" y="2" width="116" height="116" rx="24" fill="#ede4d0"/>
   <rect x="2" y="2" width="116" height="116" rx="24" fill="none" stroke="#c8bea4" stroke-width="0.8"/>
 
-  <!-- Upper arrow: left → right, curves down through the middle -->
-  <path d="M 22 40 H 42 C 60 40 60 80 78 80"
-        fill="none" stroke="#161616" stroke-width="7" stroke-linecap="round"/>
-  <!-- Arrowhead pointing right -->
-  <path d="M 78 80 L 70 74 L 70 86 Z" fill="#161616"/>
+  <g fill="none" stroke="#161616" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <!-- "Over" arrow — one continuous path from lower-left to upper-right -->
+    <path d="M 20 86
+             h 7
+             a 16 16 0 0 0 13.2 -6.8
+             l 21.8 -34.4
+             a 16 16 0 0 1 13.2 -6.8
+             H 96"/>
+    <!-- Chevron arrowhead at upper-right -->
+    <path d="m 84 24 14 14 -14 14"/>
 
-  <!-- Lower arrow: left → right, curves up through the middle -->
-  <path d="M 22 80 H 42 C 60 80 60 40 78 40"
-        fill="none" stroke="#161616" stroke-width="7" stroke-linecap="round"/>
-  <!-- Orange arrowhead pointing right -->
-  <path d="M 78 40 L 70 34 L 70 46 Z" fill="#d6651f"/>
+    <!-- "Under" arrow — two stubs so the crossing reads as "passes under" -->
+    <!-- Left stub (upper-left entry) -->
+    <path d="M 20 38
+             h 7
+             a 16 16 0 0 1 14 9"/>
+    <!-- Right stub (lower-right exit) -->
+    <path d="M 96 86
+             H 75
+             a 16 16 0 0 1 -13.2 -7.2
+             l -1.6 -2"/>
+  </g>
+  <!-- Orange chevron at lower-right -->
+  <path d="m 84 72 14 14 -14 14"
+        fill="none" stroke="#d6651f" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

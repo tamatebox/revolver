@@ -1,26 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!--
-  revolver — category icon for `cat:gn` (Genre).
-  Matches the server icon style (assets/icon.svg): cream rounded tile,
-  chunky black silhouette, single warm-orange accent. Designed to read
-  clearly at 32-60px in the Linn list.
--->
+<!-- revolver — category icon for `cat:gn` (Genre). Beamed pair of eighth notes ♫ with a horizontal beam (left/right symmetric, no upper-right heaviness). -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" shape-rendering="geometricPrecision">
   <rect x="2" y="2" width="116" height="116" rx="24" fill="#ede4d0"/>
   <rect x="2" y="2" width="116" height="116" rx="24" fill="none" stroke="#c8bea4" stroke-width="0.8"/>
 
-  <!-- Eighth note ♪ -->
+  <!-- Stems + beam — fully symmetric across left/right -->
   <g fill="#161616">
-    <!-- Note head (slanted ellipse, lower-left) -->
-    <ellipse cx="44" cy="84" rx="14" ry="10" transform="rotate(-22 44 84)"/>
-    <!-- Stem rising from right edge of head -->
-    <rect x="55" y="32" width="5" height="52"/>
-    <!-- Flag curving from stem top -->
-    <path d="M 60 32
-             C 80 38, 86 50, 80 66
-             C 80 54, 72 48, 60 50 Z"/>
+    <!-- Horizontal beam, top -->
+    <rect x="34" y="28" width="57" height="14"/>
+    <!-- Left stem -->
+    <rect x="34" y="32" width="5" height="50"/>
+    <!-- Right stem -->
+    <rect x="86" y="32" width="5" height="50"/>
   </g>
 
-  <!-- Warm-orange accent dot on the flag tip -->
-  <circle cx="80" cy="58" r="3.5" fill="#d6651f"/>
+  <!-- Two note heads — left black, right orange — at the same level -->
+  <ellipse cx="30" cy="82" rx="11" ry="8" transform="rotate(-20 30 82)" fill="#161616"/>
+  <ellipse cx="82" cy="82" rx="11" ry="8" transform="rotate(-20 82 82)" fill="#d6651f"/>
 </svg>
