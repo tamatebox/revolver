@@ -145,10 +145,12 @@ async fn main() -> Result<()> {
     }
 
     // Startup scan (SPEC §4.4 / config.scan.on_startup).
+    //
+    // #15: detached so HTTP bind below is not blocked behind the initial scan
+    // (multi-minute on large libraries). Callers poll `/admin/scan-progress`
+    // and read `/admin/scan-report` once `phase = "idle"`. The shutdown path's
+    // `scan_lock.acquire()` wait keeps WAL safety unchanged.
     if cfg.scan.on_startup {
-        let library_root = state.library_root.clone();
-        let extensions = state.extensions.clone();
-        let parallel = state.scan_parallel;
         // ops §P1: replace expect() chain with anyhow to avoid process abort.
         // A closed semaphore is exceptional, but bubbling it up explicitly as a
         // startup failure is easier to trace from ops logs than a panic.
@@ -158,49 +160,86 @@ async fn main() -> Result<()> {
             .acquire_owned()
             .await
             .map_err(|_| anyhow!("scan_lock semaphore closed unexpectedly during startup"))?;
+        let library_root = state.library_root.clone();
+        let extensions = state.extensions.clone();
+        let parallel = state.scan_parallel;
         let scan_pool = pool.clone();
         let progress = scan_progress.clone();
-        let report =
-            tokio::task::spawn_blocking(move || -> error::Result<scan::report::ScanReport> {
-                let _permit = permit;
-                let mut conn = scan_pool.get()?;
-                scan::run(&mut conn, &library_root, &extensions, parallel, progress)
-            })
-            .await
-            .map_err(|e| anyhow!("startup scan spawn_blocking join failed: {e}"))??;
-        tracing::info!(
-            scan_id = %report.scan_id,
-            duration_ms = report.duration_ms,
-            "startup scan complete"
-        );
+        let state_for_post = state.clone();
 
-        // If the startup scan produced a structural change (insert/delete/update),
-        // send propchange to already-SUBSCRIBED control points (SPEC §5.1).
-        // Right after startup there are typically 0 subscribers, so this is often a no-op.
-        if scan::should_bump_system_update_id(&report.stats) {
-            let conn = pool.get()?;
-            let id = state_kv::get(&conn, "system_update_id")?.unwrap_or_else(|| "1".to_string());
-            drop(conn);
-            upnp::gena::broadcast_propchange(
-                &notify_client,
-                &subscriptions,
-                &notify_tasks,
-                upnp::gena::ServiceId::ContentDirectory,
-                &[("SystemUpdateID", &id)],
-            )
-            .await;
+        tokio::spawn(async move {
+            let scan_result =
+                tokio::task::spawn_blocking(move || -> error::Result<scan::report::ScanReport> {
+                    let _permit = permit;
+                    let mut conn = scan_pool.get()?;
+                    scan::run(&mut conn, &library_root, &extensions, parallel, progress)
+                })
+                .await;
 
-            // On structural change, also reshuffle Random (SPEC §6.6).
-            // Full reshuffle every time to avoid new releases being buried at the tail.
-            let conn = pool.get()?;
-            let limit = state
-                .browse
-                .read()
-                .map_err(|_| anyhow!("browse settings lock poisoned at post-scan reshuffle"))?
-                .random_albums_limit;
-            let n = state.random_state.reshuffle(&conn, limit)?;
-            tracing::info!(albums = n, "post-startup-scan random reshuffle complete");
-        }
+            let report = match scan_result {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => {
+                    tracing::error!(error = ?e, "startup scan failed");
+                    return;
+                }
+                Err(e) => {
+                    tracing::error!(error = ?e, "startup scan join failed");
+                    return;
+                }
+            };
+            tracing::info!(
+                scan_id = %report.scan_id,
+                duration_ms = report.duration_ms,
+                "startup scan complete"
+            );
+
+            // If the startup scan produced a structural change (insert/delete/update),
+            // send propchange to already-SUBSCRIBED control points (SPEC §5.1).
+            // Right after startup there are typically 0 subscribers, so this is often a no-op.
+            if scan::should_bump_system_update_id(&report.stats) {
+                let conn = match state_for_post.db_pool.get() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::error!(error = ?e, "post-startup-scan: failed to get DB conn");
+                        return;
+                    }
+                };
+                let id = state_kv::get(&conn, "system_update_id")
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "1".to_string());
+                drop(conn);
+                upnp::gena::broadcast_propchange(
+                    &state_for_post.notify_client,
+                    &state_for_post.subscriptions,
+                    &state_for_post.notify_tasks,
+                    upnp::gena::ServiceId::ContentDirectory,
+                    &[("SystemUpdateID", &id)],
+                )
+                .await;
+
+                // On structural change, also reshuffle Random (SPEC §6.6).
+                // Full reshuffle every time to avoid new releases being buried at the tail.
+                if let Ok(conn) = state_for_post.db_pool.get() {
+                    // Lock poison is rare; degrade to `None` (= no cap) rather than
+                    // skipping the reshuffle entirely (matches `/admin/rescan`).
+                    let limit = state_for_post
+                        .browse
+                        .read()
+                        .map(|s| s.random_albums_limit)
+                        .unwrap_or(None);
+                    match state_for_post.random_state.reshuffle(&conn, limit) {
+                        Ok(n) => tracing::info!(
+                            albums = n,
+                            "post-startup-scan random reshuffle complete"
+                        ),
+                        Err(e) => {
+                            tracing::error!(error = ?e, "post-startup-scan reshuffle failed")
+                        }
+                    }
+                }
+            }
+        });
     }
 
     // Start the SSDP listener / advertiser.
