@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinSet;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::upnp::notify::send_notify;
@@ -204,11 +205,16 @@ pub async fn broadcast_propchange(
     for (sid, callback, seq) in snap {
         let body_clone = body.clone();
         let client_clone = client.clone();
-        g.spawn(async move {
-            if let Err(e) = send_notify(&client_clone, &callback, &sid, seq, &body_clone).await {
-                tracing::warn!(sid = %sid, error = %e, "propchange NOTIFY failed");
+        let notify_span = tracing::info_span!("gena.notify", sid = %sid, service = ?service);
+        g.spawn(
+            async move {
+                if let Err(e) = send_notify(&client_clone, &callback, &sid, seq, &body_clone).await
+                {
+                    tracing::warn!(error = %e, "propchange NOTIFY failed");
+                }
             }
-        });
+            .instrument(notify_span),
+        );
     }
 }
 
@@ -222,17 +228,21 @@ pub fn spawn_initial_notify(
     body: String,
 ) {
     let tasks = tasks.clone();
+    let notify_span = tracing::info_span!("gena.initial_notify", sid = %sid);
     // Calling `JoinSet::spawn` requires acquiring the async lock, so wrap the
     // whole acquire+spawn in `tokio::spawn` (lets the handler return immediately).
     tokio::spawn(async move {
         let mut g = tasks.inner.lock().await;
-        g.spawn(async move {
-            // Short delay so the NOTIFY doesn't arrive before Linn receives the 200.
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            if let Err(e) = send_notify(&client, &callback, &sid, seq, &body).await {
-                tracing::warn!(sid = %sid, error = %e, "initial NOTIFY failed");
+        g.spawn(
+            async move {
+                // Short delay so the NOTIFY doesn't arrive before Linn receives the 200.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                if let Err(e) = send_notify(&client, &callback, &sid, seq, &body).await {
+                    tracing::warn!(error = %e, "initial NOTIFY failed");
+                }
             }
-        });
+            .instrument(notify_span),
+        );
     });
 }
 
