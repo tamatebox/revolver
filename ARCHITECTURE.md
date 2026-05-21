@@ -15,26 +15,51 @@ src/
 ├── config.rs             `config.toml` schema and deserialization
 ├── error.rs              Unified `thiserror`-based error type
 ├── state.rs              AppState (Arc<...>): db pool / scan_lock / UUID / friendly_name /
-│                            local_ip / subscriptions / notify_tasks / art_cache /
-│                            random_state / started_at
+│                            local_ip / subscriptions / notify_tasks / notify_client /
+│                            art_cache / random_state / scan_progress / started_at /
+│                            ssdp_listener_active / ssdp_advertiser_active /
+│                            browse: RwLock<BrowseSettings> (#13) / config_defaults
 ├── random.rs             `Mutex<Vec<i64>>`-backed Random Albums state (SPEC §6.6)
+├── normalize.rs          NFKD + combining-marks strip + lowercase + katakana→hiragana
+│                            (#6). One function (`for_search`) used by both the
+│                            shadow-column populator (upsert / migrate) and the
+│                            Search query side.
+├── config_catalog.rs     User-editable config key registry (#13). Each entry
+│                            has a default-from-toml, validator, and ReloadTier
+│                            (Runtime / Reload / Restart).
 │
 ├── db/                   # ─── Persistence layer ───────────────────────
 │   ├── mod.rs            r2d2 connection pool, PRAGMAs, migration entry
 │   ├── schema.rs         `CREATE TABLE` / `CREATE INDEX` + idempotent
 │   │                        `ensure_column` migrations
 │   ├── albums.rs         albums: upsert / delete_orphans / recalc_counts /
-│   │                        recalc_quality / get_representative_track_path
-│   ├── tracks.rs         tracks: upsert / detect_deleted / get_mtimes / lookup_by_id
+│   │                        recalc_quality / recalc_last_added_at /
+│   │                        recalc_last_played_at / bump_album_last_played_at /
+│   │                        get_representative_track_path. `upsert` populates
+│   │                        `album_norm` / `effective_album_artist_norm` (#6).
+│   ├── tracks.rs         tracks: upsert / detect_deleted / get_mtimes /
+│   │                        lookup_by_id. `upsert` populates the six `*_norm`
+│   │                        shadow columns (#6), `year` (#2), and the four
+│   │                        ReplayGain values (#11) alongside the raw fields.
+│   ├── config_overrides.rs `config_overrides` KV (#13): get / set / delete +
+│   │                        list_all for the admin config endpoints.
 │   └── state_kv.rs       server_state key-value (uuid, system_update_id, last_scan_report)
 │
 ├── scan/                 # ─── Library scan ────────────────────────────
-│   ├── mod.rs            Scan orchestrator (SPEC §4.1 step 1-12, including quality recalc)
+│   ├── mod.rs            Scan orchestrator (SPEC §4.1 step 1-12, including
+│   │                        quality recalc + `albums.last_added_at` /
+│   │                        `last_played_at` denormalization recalcs).
 │   ├── walker.rs         walkdir-based enumeration with extension / hidden-file filtering
 │   │                        (SPEC §4.8)
-│   ├── tagger.rs         lofty-based tag + codec + audio-properties reader
+│   ├── tagger.rs         lofty-based tag + codec + audio-properties reader.
+│   │                        Reads composer / conductor / performer (#9), release
+│   │                        year (#2, `parse_year`), and ReplayGain track / album
+│   │                        gain & peak (#11, `parse_rg` handles "-7.34 dB" /
+│   │                        "0.987654").
 │   ├── matcher.rs        Computes `effective_album_artist` and `added_at`
 │   │                        (SPEC §3.2, §4.2)
+│   ├── progress.rs       Lock-free `ScanProgress` snapshot (#12). Powers
+│   │                        `/admin/scan-progress`.
 │   └── report.rs         `ScanReport` struct and JSON serialization (SPEC §4.7)
 │
 ├── art/                  # ─── Album art extraction + cache (SPEC §8.3) ─
@@ -57,27 +82,43 @@ src/
 │   ├── connection_manager.rs GetProtocolInfo / GetCurrentConnectionIDs /
 │   │                            GetCurrentConnectionInfo (SPEC §5.5)
 │   ├── didl.rs               DIDL-Lite Container / Item XML generation (SPEC §7)
-│   ├── object_id.rs          ObjectID parse / encode (URL-safe base64, no padding),
-│   │                            `RecentRange` enum (Day / Week / Month / 3Months / Year / All)
-│   ├── search.rs             SearchCriteria parser (SPEC §5.4)
+│   ├── object_id.rs          ObjectID parse / encode (URL-safe base64, no padding).
+│   │                            Variants: Root / Cat{Aa,Ar,Al,Gn,Recent,Played,Random,
+│   │                            Hires,Lossy,Mixed,Cm,Cn,Pf,Yr,Dec} +
+│   │                            AlbumArtist / Artist / Genre / Composer / Conductor /
+│   │                            Performer / Year(i32) / Decade(i32) / Album / Track /
+│   │                            Disc{album_id,disc}.
+│   │                            (The pre-#16 `RecentRange` enum was dropped when
+│   │                            `cat:recent` was flattened to a single album list.)
+│   ├── search.rs             SearchCriteria parser (SPEC §5.4).
+│   │                            `read_string` slices the `&str` source to preserve
+│   │                            multibyte UTF-8 in query values (#6).
 │   ├── gena.rs               GENA subscriptions store + notify-tasks tracker
 │   └── usn.rs                The five SSDP USN / NT variants (SPEC §9.3)
 │
 ├── browse/               # ─── Browse view → SQL mapping (SPEC §6.4) ───
 │   ├── mod.rs            BrowseContext + browse_metadata / browse_children dispatch
-│   ├── categories.rs     Root (10 categories) + cat:aa/ar/al/gn facets +
-│   │                        Container builder
-│   ├── albums.rs         `alb:id` metadata + album list under each aa/ar/gn facet
+│   ├── categories.rs     Root (selection + order from `browse.top_level`, #8) +
+│   │                        cat:aa/ar/al/gn + cat:cm/cn/pf (#9) + cat:yr/dec (#2)
+│   │                        facets. Container builders (plain / person / genre /
+│   │                        year). Classical and year facets self-hide via
+│   │                        `facet_has_any` when the underlying column is empty.
+│   ├── albums.rs         `alb:id` metadata + album list under each aa/ar/gn/cm/cn/pf
+│   │                        facet (`WHERE EXISTS` semi-join) + `yr:Y` / `dec:D`
+│   │                        filters (#2, year EXISTS / BETWEEN).
 │   ├── tracks.rs         `trk:id` metadata + track list under `alb:id` +
 │   │                        DIDL Item builder
-│   ├── recent.rs         `cat:recent` root + `cat:recent:{day,week,month,3months,year:YYYY,all}`
-│   │                        — dynamic hiding rules + per-year enumeration +
-│   │                        range-specific SQL (SPEC §6.7)
+│   ├── recent.rs         `cat:recent` — flat album list ordered by
+│   │                        `albums.last_added_at DESC`, capped by
+│   │                        `recently_added_limit` + optional
+│   │                        `recently_added_max_age_days` (SPEC §6.7, #16).
+│   │                        (The pre-#16 sub-container cascade is gone.)
 │   ├── random.rs         `cat:random` — fetches albums from `random_state.page()`
 │   ├── quality.rs        `cat:hires` / `cat:lossy` / `cat:mixed` — filtered by `albums.quality`
 │   ├── played.rs         `cat:played` — `MAX(last_played_at) DESC`, never-played excluded
 │   │                        (SPEC §6.8)
-│   └── search.rs         DB query for the ContentDirectory `Search` action
+│   └── search.rs         DB query for ContentDirectory `Search`. Uses `*_norm`
+│                            shadow columns + normalized search input (#6, SPEC §5.4).
 │
 ├── ssdp.rs               SSDP discovery (SPEC §9.1-9.3).
 │                            Listener and advertiser tasks are defined in one file.
@@ -94,8 +135,12 @@ src/
     ├── art.rs            `GET /art/{album_id}` + cache (SPEC §8.3)
     ├── gena.rs           `SUBSCRIBE` / `UNSUBSCRIBE` on `/event/cd`, `/event/cm`
     │                        (SPEC §9.4-9.5)
-    ├── admin.rs          `/admin/scan-report`, `rescan`, `reshuffle`, `stats`, `ui`
-    │                        (SPEC §8.4-8.5)
+    ├── admin.rs          `/admin/scan-report`, `rescan` (#18, async 202),
+    │                        `reshuffle`, `stats` (incl. `tracks_with_replaygain`,
+    │                        #11), `scan-progress` (#12), `ui` (SPEC §8.4-8.5).
+    ├── admin_config.rs   `/admin/config` (#13): GET / POST / DELETE driving the
+    │                        `config_overrides` table + the `config_catalog`
+    │                        validator pipeline.
     └── admin_ui.html     Single-page web admin UI
                              (embedded into the binary via `include_str!`)
 ```
@@ -140,12 +185,19 @@ src/
   writer-lock contention under SQLite WAL mode.
 - **`AppState` is shared across all layers via `Arc<...>`.** Current fields:
   `db_pool`, `library_root`, `extensions`, `scan_parallel`,
-  `scan_lock: Arc<Semaphore>`, `uuid`, `friendly_name`, `http_port`, `local_ip`,
-  `subscriptions: Arc<Subscriptions>`, `notify_tasks: Arc<NotifyTasks>`,
-  `art_cache: Arc<ArtCache>`, `random_state: Arc<RandomState>`, `started_at: i64`.
+  `scan_lock: Arc<Semaphore>`, `browse: Arc<RwLock<BrowseSettings>>` (#13,
+  hot-swap from `/admin/config`), `config_defaults: Arc<DefaultsMap>` (toml
+  defaults snapshot, immutable after startup), `uuid`, `friendly_name`,
+  `http_port`, `local_ip`, `subscriptions: Arc<Subscriptions>`,
+  `notify_tasks: Arc<NotifyTasks>`, `notify_client: reqwest::Client`,
+  `art_cache: Arc<ArtCache>`, `random_state: Arc<RandomState>`,
+  `scan_progress: Arc<ScanProgress>` (#12),
+  `ssdp_{listener,advertiser}_active: Arc<AtomicBool>` (observability,
+  ops §P1), `started_at: i64`.
 - **`BrowseContext` collects cross-view dependencies** (db connection, URL bases,
-  random state, `now_secs`). It is built in `content_directory.rs` and passed
-  into each browse view, which lets tests inject a fixed `now_secs`.
+  random state, `now_secs`, and a snapshot of `BrowseSettings`). It is built in
+  `content_directory.rs` and passed into each browse view, which lets tests
+  inject a fixed `now_secs` and pinned settings (e.g. a custom `top_level`).
 - **No circular dependencies.**
 
 ---
@@ -195,6 +247,10 @@ src/
        db/albums.recalc_quality    bulk UPDATE from tracks' codec / sample-rate /
               │                       bit-depth (SPEC §4.6)
               ▼
+       db/albums.recalc_last_added_at   denormalize MAX(tracks.added_at) onto
+       db/albums.recalc_last_played_at  the album row (cat:recent / cat:played
+              │                          read these directly, no GROUP BY hot path)
+              ▼
        state.system_update_id += 1  (only if there was a structural change)
               │
               ▼
@@ -206,6 +262,14 @@ src/
               ▼
        db/state_kv.save_scan_report (JSON, keeps the most recent entry only)
 ```
+
+Triggered from `POST /admin/rescan`, the request **returns 202 Accepted
+immediately** with `{ scan_id, started_at }` while the scan + post-scan side
+effects run on a detached `tokio::spawn` (#18). The detached closure holds
+the `scan_lock` permit until completion. Callers poll
+`/admin/scan-progress` (#12, lock-free `Atomic*::load`) and read the final
+report from `/admin/scan-report`. 409 Conflict is returned immediately if a
+scan is already in flight.
 
 Notes:
 
@@ -231,19 +295,25 @@ Notes:
         │
         ▼
    upnp/content_directory.handle
-        │  Build BrowseContext (now_secs / random_state / URL bases)
+        │  Build BrowseContext (now_secs / random_state / URL bases /
+        │  BrowseSettings snapshot — top_level, recently_added_*, etc.)
         │
         ├─▶ upnp/object_id.parse(ObjectID)  ──▶  enum ObjectId
         │     - Root / CatAa / CatAr / CatAl / CatGn
-        │     - CatRecent / CatRecentRange(Day | Week | Month | 3M | Year | All)
-        │     - CatPlayed / CatRandom / CatHires / CatLossy / CatMixed
-        │     - AlbumArtist(name) / Artist(name) / Genre(name) / Album(id) / Track(id)
+        │     - CatRecent / CatPlayed / CatRandom / CatHires / CatLossy / CatMixed
+        │     - CatCm / CatCn / CatPf (#9) / CatYr / CatDec (#2)
+        │     - AlbumArtist / Artist / Genre / Composer / Conductor / Performer
+        │     - Year(i32) / Decade(i32) (#2) / Album(id) / Track(id) /
+        │       Disc { album_id, disc } (#17)
         │
         ▼
    browse::browse_metadata / browse_children
-        │  → categories / albums / tracks / recent / random / quality / played
+        │  → categories (root + cat:*) / albums (alb:* + per-facet listings) /
+        │    tracks (trk:* + alb:* children) / recent / random / quality / played /
+        │    search
         │
-        ├─▶ DB SELECT + COUNT (SPEC §6.4)
+        ├─▶ DB SELECT + COUNT (SPEC §6.4). Search predicates run against
+        │     `*_norm` shadow columns (#6).
         │
         ▼
    result → DidlOutput { containers, items } + total_matches
@@ -397,36 +467,73 @@ In parallel, `ssdp::advertiser` multicasts `ssdp:alive` on startup, again every
 ### Flow G — Recently Added / Played
 
 ```
-   Browse cat:recent
-        │  browse::recent::recent_root_children(ctx)
+   Browse cat:recent  (flat album list since #16 — SPEC §6.7)
+        │  browse::recent::recent_root_children(ctx, start, count)
         │
-        ├─▶ COUNT(albums with MAX(added_at) >= since) for [day, week, month, 3months]
-        ├─▶ Dynamic hiding: skip a range if its count equals the next-shorter range,
-        │     or if the count is zero
-        ├─▶ Distinct years via strftime (most recent 10)
-        ├─▶ "Show All" is always included
-        ▼
-   return the sub-container list
-
-
-   Browse cat:recent:day (or :week / :month / :3months / :year:YYYY / :all)
-        │  browse::recent::recent_range_children(ctx, range, ...)
-        │
-        ├─▶ range_bounds(now_secs, range) builds the WHERE clause
-        │     (Day/Week/Month/3M → m.aa >= lower, Year → BETWEEN, All → unconstrained)
+        ├─▶ Optional age cap: ctx.settings.recently_added_max_age_days
+        │     adds `WHERE last_added_at >= now - days*86400`
+        ├─▶ Hard item cap: ctx.settings.recently_added_limit
+        │     (also caps SOAP RequestedCount even when the client asks for more)
         │
         ▼
-   albums JOIN (MAX(added_at) GROUP BY album_id) ORDER BY aa DESC, id DESC
-   LIMIT/OFFSET → album list
+   SELECT albums ORDER BY last_added_at DESC, id DESC LIMIT/OFFSET → album list
+   (`albums.last_added_at` is denormalized by `recalc_last_added_at` post-scan,
+    so no GROUP BY at Browse time)
 
 
    Browse cat:played
-        │  browse::played::played_albums_children(ctx, ...)
+        │  browse::played::played_albums_children(ctx, start, count)
         │
         ▼
-   albums JOIN (MAX(last_played_at) WHERE NOT NULL GROUP BY album_id)
-   ORDER BY lp DESC, id DESC LIMIT/OFFSET → album list
-   (never-played albums are excluded by the join)
+   SELECT albums WHERE last_played_at IS NOT NULL
+   ORDER BY last_played_at DESC, id DESC LIMIT/OFFSET → album list
+   (never-played albums are excluded; `albums.last_played_at` denormalized
+    by stream hot path + post-scan recalc)
+```
+
+**History**: the pre-#16 `cat:recent` exposed a sub-container cascade
+(`day` / `week` / `month` / `3months` / `year:YYYY` / `all`) with dynamic
+hiding. Real-device use on Linn showed the two-click hop was friction
+without value, so it was dropped in favor of the flat list above. Future
+views default to flat — avoid sub-container cascades (see CLAUDE.md).
+
+### Flow H — Search
+
+```
+   Control point
+        │ POST /control/cd  (SOAPAction: ContentDirectory#Search)
+        ▼
+   http/soap_ctrl → upnp/content_directory.handle
+        │
+        ├─▶ upnp/search.parse_criteria(SearchCriteria)
+        │     ──▶  SearchExpr { class: ClassFilter, predicate: Predicate }
+        │     - ClassFilter::{Album,Artist,Track,Any} from `upnp:class derivedfrom`
+        │     - Predicate tree (Contains / And / Or / DerivedFrom / True)
+        │
+        ▼
+   browse::search::search_tracks(ctx, expr, start, count)
+        │  dispatched by ClassFilter:
+        │
+        ├── Album  ──▶ search_albums
+        │     WHERE on album_norm / effective_album_artist_norm (#6)
+        │
+        ├── Artist ──▶ search_artists
+        │     If `[@role="Composer|Conductor|Performer"]` is present (#9):
+        │     ──▶ search_classical_facet — DISTINCT t.{column} where
+        │         the `*_norm` shadow column matches; returns cm:/cn:/pf:
+        │         containers
+        │     Otherwise: DISTINCT effective_album_artist with norm column
+        │
+        └── Track / Any ──▶ search_track_items
+              tracks JOIN albums, 4-field OR (title / album / artist / genre)
+              with role-routed artist → composer / conductor / performer
+        │
+        ▼
+   The Contains leaf builds `col_norm LIKE '%norm(value)%'` — both column
+   value and search input flow through `normalize::for_search`
+   (NFKD → strip marks → lowercase → katakana→hiragana).
+        ▼
+   DidlOutput → soap response → control point
 ```
 
 ---
