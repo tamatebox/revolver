@@ -44,6 +44,7 @@ pub fn recent_root_children(
         didl: DidlOutput {
             containers,
             items: vec![],
+            nodes: vec![],
         },
         total_matches: total as usize,
     })

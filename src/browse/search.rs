@@ -53,6 +53,7 @@ fn empty() -> SearchResult {
         didl: DidlOutput {
             containers: vec![],
             items: vec![],
+            nodes: vec![],
         },
         total_matches: 0,
     }
@@ -112,6 +113,7 @@ fn search_albums(
         didl: DidlOutput {
             containers,
             items: vec![],
+            nodes: vec![],
         },
         total_matches: total as usize,
     })
@@ -199,6 +201,7 @@ fn search_artists(
         didl: DidlOutput {
             containers,
             items: vec![],
+            nodes: vec![],
         },
         total_matches: total as usize,
     })
@@ -285,6 +288,7 @@ fn search_track_items(
         didl: DidlOutput {
             containers: vec![],
             items,
+            nodes: vec![],
         },
         total_matches: total as usize,
     })

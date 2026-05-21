@@ -798,6 +798,24 @@ Album containers use `object.container.album.musicAlbum`.
 **For lossy formats (MP3 / AAC)**: omit `bitsPerSample`. Always include
 `bitrate`.
 
+### 7.2.1 Disc Divider (multi-disc albums only)
+
+A multi-disc album's child list includes `<container>` dividers
+interleaved between disc groups, so Linn (which doesn't render disc
+separation from `<upnp:originalDiscNumber>` alone) shows visual disc
+boundaries:
+
+```xml
+<container id="disc:{album_id}:{N}" parentID="alb:{album_id}"
+           childCount="..." restricted="1">
+  <dc:title>>> Disc N</dc:title>
+  <upnp:class>object.container</upnp:class>
+</container>
+```
+
+The divider's children resolve to that disc's tracks. Single-disc albums
+emit **no** divider.
+
 ### 7.3 protocolInfo Mapping
 
 | Format | Codec | Extension | MIME type | protocolInfo |
@@ -1237,11 +1255,15 @@ quality_in_title_show_specs = true           # include numeric specs like "Hi-Re
 16. Recently Added time-range submenu (§6.7).
 17. Recently Played view via stream-hit counting (`cat:played`, §6.8).
 18. Web admin UI (§8.4).
-19. Multi-disc albums surface disc info via both `<upnp:originalDiscNumber>`
-    **and** a `"N. "` title prefix (e.g. `"1. Hey Jude"` / `"2. Exciton"`).
-    Gated on `MAX(disc_num) > 1` per album, so single-disc albums are
-    unaffected. Title prefix is the Linn-side fallback because Linn parses
-    but ignores `<upnp:originalDiscNumber>` in UI rendering (§7.2, §14).
+19. Multi-disc albums (`MAX(disc_num) > 1`) emit:
+    - `<upnp:originalDiscNumber>` on each track (for spec-compliant control
+      points such as BubbleUPnP / JRiver), and
+    - **disc-divider containers** (`disc:{album_id}:{disc}` with title
+      `">> Disc N"`) interleaved between disc boundaries in the album's
+      child list, because Linn ignores `<upnp:originalDiscNumber>` in UI
+      rendering. The divider is itself a `<container>`; tapping it browses
+      the disc's tracks. MinimServer ships the same pattern (§7.2, §14).
+      Single-disc albums skip both — no divider, no `originalDiscNumber`.
 
 ### Future Work
 
@@ -1301,14 +1323,23 @@ quality_in_title_show_specs = true           # include numeric specs like "Hi-Re
   compilation)` with different `disc_num` is automatically aggregated as a
   single album (the schema handles it). `ORDER BY disc_num, track_num`
   produces the right order. When `MAX(disc_num) > 1` for that album, two
-  things happen: (1) `<upnp:originalDiscNumber>` is emitted, and (2)
-  `dc:title` is prefixed with `"N. "` (e.g. `"1. Hey Jude"`). The title
-  prefix is the Linn fallback — Linn parses `originalDiscNumber` but does not
-  visually separate discs from it, leaving disc-2 tracks looking like
-  duplicates of disc-1 tracks. Single-disc albums skip both. When tags carry
-  album names like `"Album [Disc 1]"`, the result is two separate albums;
-  fix this in tags. Automatic disc merging based on parsed-out suffixes is
-  **not implemented** (intentional — the parsing rules are too lossy).
+  things happen: (1) `<upnp:originalDiscNumber>` is emitted on each track,
+  and (2) a `<container>` divider (`disc:{album_id}:{disc}`, title
+  `">> Disc N"`) is **interleaved between disc groups in the album's child
+  list**. The divider is the Linn fallback — Linn parses
+  `originalDiscNumber` but does not visually separate discs from it,
+  leaving disc-2 tracks looking like duplicates of disc-1 tracks. The
+  divider container is tappable; drilling in returns just that disc's
+  tracks (a redundant subset of the parent flat view, but it keeps
+  navigation coherent). Single-disc albums skip both — `dc:title` is
+  **never** modified for disc info, so single-disc browsing is unchanged.
+  When tags carry album names like `"Album [Disc 1]"`, the result is two
+  separate albums; fix this in tags. Automatic disc merging based on
+  parsed-out suffixes is **not implemented** (intentional — the parsing
+  rules are too lossy). Non-order-preserving control points (VLC,
+  foobar2000, MediaMonkey) may bunch the divider containers separately
+  from tracks; this is acceptable degradation since Linn is the primary
+  target and other CPs at least don't drop the response.
 - **DB cleanup on file deletion**: paths missing from the filesystem during a
   scan are deleted from `tracks`. File moves or renames also look like
   delete-then-insert, which resets `added_at` to "now" for those tracks.

@@ -26,6 +26,13 @@ pub enum ObjectId {
     Genre(String),
     Album(i64),
     Track(i64),
+    /// Disc-divider container injected into a multi-disc album's child list.
+    /// Encoded as `disc:{album_id}:{disc}`. Browsing into it returns just that
+    /// disc's tracks (a redundant subset of the album's flat view).
+    Disc {
+        album_id: i64,
+        disc: i64,
+    },
 }
 
 pub fn parse(s: &str) -> Option<ObjectId> {
@@ -52,6 +59,12 @@ pub fn parse(s: &str) -> Option<ObjectId> {
                 rest.parse().ok().map(ObjectId::Album)
             } else if let Some(rest) = s.strip_prefix("trk:") {
                 rest.parse().ok().map(ObjectId::Track)
+            } else if let Some(rest) = s.strip_prefix("disc:") {
+                let (a, d) = rest.split_once(':')?;
+                Some(ObjectId::Disc {
+                    album_id: a.parse().ok()?,
+                    disc: d.parse().ok()?,
+                })
             } else {
                 None
             }
@@ -77,6 +90,7 @@ pub fn encode(id: &ObjectId) -> String {
         ObjectId::Genre(name) => format!("gn:{}", encode_name(name)),
         ObjectId::Album(id) => format!("alb:{}", id),
         ObjectId::Track(id) => format!("trk:{}", id),
+        ObjectId::Disc { album_id, disc } => format!("disc:{}:{}", album_id, disc),
     }
 }
 
@@ -207,6 +221,10 @@ mod tests {
             ObjectId::Genre("Jazz / Fusion".to_string()), // slash & space
             ObjectId::Album(42),
             ObjectId::Track(99),
+            ObjectId::Disc {
+                album_id: 42,
+                disc: 2,
+            },
         ];
         for case in cases {
             let encoded = encode(&case);

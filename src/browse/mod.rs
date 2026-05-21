@@ -11,7 +11,7 @@ use rusqlite::Connection;
 use crate::error::Result;
 use crate::random::RandomState;
 use crate::state::BrowseSettings;
-use crate::upnp::didl::Container;
+use crate::upnp::didl::{Container, DidlNode};
 use crate::upnp::object_id::ObjectId;
 
 pub mod albums;
@@ -29,6 +29,22 @@ pub(crate) mod test_helpers;
 pub struct DidlOutput {
     pub containers: Vec<Container>,
     pub items: Vec<crate::upnp::didl::Item>,
+    /// Order-preserving alternative to `containers`/`items`. When non-empty,
+    /// the SOAP layer emits these in order (interleaving `<container>` and
+    /// `<item>`) and **ignores** the separated `containers`/`items` fields.
+    /// Used by multi-disc album browse so disc-divider containers can sit
+    /// between track items.
+    pub nodes: Vec<DidlNode>,
+}
+
+impl DidlOutput {
+    pub fn empty() -> Self {
+        Self {
+            containers: vec![],
+            items: vec![],
+            nodes: vec![],
+        }
+    }
 }
 
 pub struct ChildrenResult {
@@ -74,6 +90,9 @@ pub fn browse_metadata(ctx: &BrowseContext, id: &ObjectId) -> Result<DidlOutput>
         ObjectId::Genre(name) => Ok(single(genre_container(id, "cat:gn", name))),
         ObjectId::Album(album_id) => albums::album_metadata(ctx, *album_id),
         ObjectId::Track(track_id) => tracks::track_metadata(ctx, *track_id),
+        ObjectId::Disc { album_id, disc } => {
+            Ok(single(tracks::disc_container(ctx, *album_id, *disc)?))
+        }
     }
 }
 
@@ -106,11 +125,11 @@ pub fn browse_children(
         ObjectId::Artist(name) => albums::albums_by_artist_children(ctx, name, start, count),
         ObjectId::Genre(name) => albums::albums_by_genre_children(ctx, name, start, count),
         ObjectId::Album(album_id) => tracks::album_tracks_children(ctx, *album_id, start, count),
+        ObjectId::Disc { album_id, disc } => {
+            tracks::disc_tracks_children(ctx, *album_id, *disc, start, count)
+        }
         ObjectId::Track(_) => Ok(ChildrenResult {
-            didl: DidlOutput {
-                containers: vec![],
-                items: vec![],
-            },
+            didl: DidlOutput::empty(),
             total_matches: 0,
         }),
     }
@@ -120,6 +139,7 @@ pub(crate) fn single(c: Container) -> DidlOutput {
     DidlOutput {
         containers: vec![c],
         items: vec![],
+        nodes: vec![],
     }
 }
 

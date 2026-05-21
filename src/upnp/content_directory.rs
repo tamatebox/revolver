@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use rusqlite::Connection;
 
-use crate::browse::{self, search as browse_search, BrowseContext};
+use crate::browse::{self, search as browse_search, BrowseContext, DidlOutput};
 use crate::db::{state_kv, Pool};
 use crate::state::AppState;
 use crate::upnp::{didl, object_id, search, soap};
@@ -12,6 +12,17 @@ use crate::upnp::{didl, object_id, search, soap};
 const CD_SERVICE_TYPE: &str = "urn:schemas-upnp-org:service:ContentDirectory:1";
 /// Upper bound when `RequestedCount = 0` (all results) (SPEC §6.5).
 const MAX_REQUESTED_COUNT: usize = 1000;
+
+/// Count of child elements in a `DidlOutput`. When `nodes` is non-empty it
+/// is the authoritative source (ordered Container/Item interleave for
+/// multi-disc albums); otherwise fall back to `containers.len() + items.len()`.
+fn didl_count(output: &DidlOutput) -> usize {
+    if !output.nodes.is_empty() {
+        output.nodes.len()
+    } else {
+        output.containers.len() + output.items.len()
+    }
+}
 
 pub fn handle(
     pool: &Pool,
@@ -89,19 +100,23 @@ fn handle_browse(
         "BrowseMetadata" => {
             let output = browse::browse_metadata(&ctx, &object_id)
                 .map_err(|_| soap::SoapFault::no_such_object())?;
-            let n = output.containers.len() + output.items.len();
+            let n = didl_count(&output);
             (output, n, n)
         }
         "BrowseDirectChildren" => {
             let result = browse::browse_children(&ctx, &object_id, starting_index, count)
                 .map_err(|_| soap::SoapFault::no_such_object())?;
-            let n = result.didl.containers.len() + result.didl.items.len();
+            let n = didl_count(&result.didl);
             (result.didl, n, result.total_matches)
         }
         _ => return Err(soap::SoapFault::invalid_args()),
     };
 
-    let didl_xml = didl::build_didl(&output.containers, &output.items);
+    let didl_xml = if !output.nodes.is_empty() {
+        didl::build_didl_nodes(&output.nodes)
+    } else {
+        didl::build_didl(&output.containers, &output.items)
+    };
     Ok(soap::build_response_body(
         "Browse",
         CD_SERVICE_TYPE,
@@ -175,7 +190,7 @@ fn handle_search(
     let update_id = read_update_id(&conn).unwrap_or(0);
 
     let didl_xml = didl::build_didl(&result.didl.containers, &result.didl.items);
-    let num_returned = result.didl.items.len();
+    let num_returned = didl_count(&result.didl);
     Ok(soap::build_response_body(
         "Search",
         CD_SERVICE_TYPE,

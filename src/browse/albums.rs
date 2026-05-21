@@ -58,6 +58,7 @@ pub fn albums_by_aa_children(
         didl: DidlOutput {
             containers,
             items: vec![],
+            nodes: vec![],
         },
         total_matches: total as usize,
     })
@@ -101,6 +102,7 @@ pub fn albums_by_artist_children(
         didl: DidlOutput {
             containers,
             items: vec![],
+            nodes: vec![],
         },
         total_matches: total as usize,
     })
@@ -141,6 +143,7 @@ pub fn albums_by_genre_children(
         didl: DidlOutput {
             containers,
             items: vec![],
+            nodes: vec![],
         },
         total_matches: total as usize,
     })
