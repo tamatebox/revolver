@@ -286,6 +286,15 @@ src/
               │                       (SPEC §6.6)
               ▼
        db/state_kv.save_scan_report (JSON, keeps the most recent entry only)
+              │
+              ▼
+       PRAGMA optimize + wal_checkpoint(TRUNCATE)
+                                     Refresh planner stats so post-scan
+                                     Browse/Search hit SEARCH plans, then
+                                     shrink the WAL the scan grew. Failures
+                                     are logged via `tracing::warn!` and do
+                                     NOT roll back the scan report — a hot
+                                     WAL is an annoyance, not a regression.
 ```
 
 Triggered from `POST /admin/rescan`, the request **returns 202 Accepted
@@ -585,7 +594,7 @@ Top-level tasks spawned from `main.rs`:
 
 | Task | Role | Shutdown |
 |---|---|---|
-| HTTP server | axum, serves every endpoint in SPEC §8.1 | `ctrl_c` → graceful shutdown |
+| HTTP server | axum, serves every endpoint in SPEC §8.1. Every route except `/stream/{track_id}` is wrapped in a 30s `request_timeout` middleware ([http/mod.rs](src/http/mod.rs)) that returns **408** on a stuck handler; stream is exempted so whole-track responses can last tens of minutes | `ctrl_c` → graceful shutdown |
 | SSDP listener | Listens on UDP port 1900, responds to `M-SEARCH` (`ssdp.rs`) | broadcast shutdown |
 | SSDP advertiser | `ssdp:alive` on startup, periodic re-announce, `ssdp:byebye` on exit (`ssdp.rs`) | broadcast shutdown (sends byebye first) |
 | GENA sweep | Drops expired subscriptions every 60s | broadcast shutdown |

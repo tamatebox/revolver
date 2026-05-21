@@ -1,8 +1,9 @@
 //! DIDL-Lite XML generator (SPEC §7). Builds the XML string embedded in the
-//! `<Result>` of Browse responses. Output is format!-based with hand-written
-//! escape helpers.
+//! `<Result>` of Browse responses.
 
 use std::fmt::Write;
+
+use crate::upnp::xml::{escape_attr as xml_attr, escape_text as xml_escape};
 
 const ENVELOPE_OPEN: &str = r#"<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">"#;
 const ENVELOPE_CLOSE: &str = "</DIDL-Lite>";
@@ -204,52 +205,6 @@ fn format_duration(ms: u64) -> String {
     let mins = (total_secs % 3600) / 60;
     let secs = total_secs % 60;
     format!("{}:{:02}:{:02}.{:03}", hours, mins, secs, frac)
-}
-
-/// Single-pass char-by-char escape (perf §P1).
-///
-/// The previous implementation chained `String::replace` 3 times → 4 full allocs & copies
-/// (each replace returns a new String). On the hot path one page of 100 items × 5-7
-/// fields meant 500-700 allocs. `with_capacity(s.len())` + push compresses this to 1 alloc.
-///
-/// Control characters disallowed by XML 1.0 (`\x00..=\x08`, `\x0B`, `\x0C`, `\x0E..=\x1F`)
-/// are **dropped** (the DIDL XML in SPEC §7 must be valid; `\t \n \r` are kept).
-/// Prevents Linn from silently discarding entire tracks on XML parse failure.
-fn xml_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            // Strip control characters disallowed by the XML 1.0 spec.
-            '\t' | '\n' | '\r' => out.push(c),
-            c if (c as u32) < 0x20 => {
-                // Silently drop (prioritize Linn not failing XML parse).
-            }
-            other => out.push(other),
-        }
-    }
-    out
-}
-
-/// For attribute values. Adds `"` to the escape set. `'` is unnecessary because we
-/// always use `"..."` as attribute delimiters internally (SPEC scope never uses
-/// `'`-delimited attributes). Control characters are dropped, same as `xml_escape`.
-fn xml_attr(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\t' | '\n' | '\r' => out.push(c),
-            c if (c as u32) < 0x20 => {}
-            other => out.push(other),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

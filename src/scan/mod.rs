@@ -386,6 +386,16 @@ fn run_inner(
     let json = serde_json::to_string(&report)?;
     state_kv::set(conn, "last_scan_report", &json)?;
 
+    // Refresh planner stats so post-scan Browse/Search hit SEARCH plans, then
+    // truncate the WAL the scan grew. `optimize` short-circuits internally when
+    // stats are fresh, and `wal_checkpoint(TRUNCATE)` is a no-op when the WAL
+    // is already small — both are cheap on a no-op rescan. Failures are logged
+    // but never abort: a hot WAL or unrefreshed stats are mere annoyances, not
+    // a reason to lose the scan report we just wrote.
+    if let Err(e) = conn.execute_batch("PRAGMA optimize; PRAGMA wal_checkpoint(TRUNCATE);") {
+        tracing::warn!(error = %e, "post-scan optimize/checkpoint failed");
+    }
+
     Ok(report)
 }
 

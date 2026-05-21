@@ -10,3 +10,4 @@ pub mod scpd;
 pub mod search;
 pub mod soap;
 pub mod usn;
+pub mod xml;

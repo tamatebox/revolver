@@ -1,4 +1,5 @@
 use std::net::IpAddr;
+use std::time::Duration;
 
 use axum::extract::{DefaultBodyLimit, Request};
 use axum::http::StatusCode;
@@ -27,6 +28,12 @@ pub const MAX_CONCURRENT_REQUESTS: usize = 256;
 /// excessive for realistic SOAP envelope sizes (typically 2-5KB, at most tens of KB).
 /// Capping at 64KB prevents parse-cost explosion from maliciously oversized bodies.
 pub const MAX_SOAP_BODY_BYTES: usize = 64 * 1024;
+
+/// Per-request timeout applied to every route **except `/stream/{track_id}`**
+/// (which streams whole audio files and can legitimately last tens of minutes).
+/// 30s comfortably covers Browse/Search/SOAP/admin/art-extract on the verified
+/// 88k-track library while still bounding a stuck handler.
+pub const REQUEST_TIMEOUT_SECS: u64 = 30;
 
 /// Build the router. Endpoints from SPEC §8.1 are added incrementally.
 ///
@@ -64,7 +71,8 @@ pub fn router(state: AppState) -> Router {
         .route("/control/cm", post(soap_ctrl::control_cm))
         .layer(DefaultBodyLimit::max(MAX_SOAP_BODY_BYTES));
 
-    Router::new()
+    // Every route except `/stream/{track_id}` goes through the request timeout.
+    let timed_routes = Router::new()
         .route("/", get(admin::ui))
         .route("/description.xml", get(upnp::description))
         .route("/scpd/cd.xml", get(upnp::scpd_cd))
@@ -75,12 +83,34 @@ pub fn router(state: AppState) -> Router {
         .route("/icon/cat/{slug}", get(upnp::icon_category))
         .route("/event/cd", any(gena::event_cd))
         .route("/event/cm", any(gena::event_cm))
-        .route("/stream/{track_id}", get(stream::stream))
         .route("/art/{album_id}", get(art::handler))
         .merge(control_routes)
         .merge(admin_routes)
+        .layer(middleware::from_fn(request_timeout));
+
+    Router::new()
+        .route("/stream/{track_id}", get(stream::stream))
+        .merge(timed_routes)
         .layer(ConcurrencyLimitLayer::new(MAX_CONCURRENT_REQUESTS))
         .with_state(state)
+}
+
+/// Aborts any handler that exceeds [`REQUEST_TIMEOUT_SECS`] with **408 Request
+/// Timeout**. Applied to every route except `/stream/{track_id}`. Implemented
+/// via [`tokio::time::timeout`] rather than a `tower::timeout::TimeoutLayer`
+/// to avoid an extra dependency feature and to compose with axum's
+/// `Result<Response, _> = Infallible` contract.
+async fn request_timeout(request: Request, next: Next) -> Response {
+    match tokio::time::timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), next.run(request)).await {
+        Ok(response) => response,
+        Err(_) => {
+            tracing::warn!(
+                timeout_secs = REQUEST_TIMEOUT_SECS,
+                "request exceeded timeout — returning 408"
+            );
+            (StatusCode::REQUEST_TIMEOUT, "request timeout").into_response()
+        }
+    }
 }
 
 /// CSRF defense middleware for `/admin/*` (security §D1).

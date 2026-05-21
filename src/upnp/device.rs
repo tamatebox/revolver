@@ -1,5 +1,7 @@
 //! UPnP Device Description XML generation (SPEC §5.2).
 
+use crate::upnp::xml::escape_text as xml_escape;
+
 const TEMPLATE: &str = r#"<?xml version="1.0"?>
 <root xmlns="urn:schemas-upnp-org:device-1-0">
   <specVersion>
@@ -64,14 +66,6 @@ pub fn description_xml(uuid: &str, friendly_name: &str) -> String {
         .replace("{friendly_name}", &xml_escape(friendly_name))
 }
 
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,8 +93,9 @@ mod tests {
 
     #[test]
     fn d2_friendly_name_is_xml_escaped() {
+        // `'` is not escaped in text nodes per XML 1.0 — only `& < >` matter here.
         let xml = description_xml("AAAA", "Tom & Jerry's <Server>");
-        assert!(xml.contains("Tom &amp; Jerry&apos;s &lt;Server&gt;"));
+        assert!(xml.contains("Tom &amp; Jerry's &lt;Server&gt;"));
         assert!(!xml.contains("Tom & Jerry's <Server>"));
     }
 }

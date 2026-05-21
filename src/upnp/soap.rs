@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
+use crate::upnp::xml::escape_text as xml_escape;
+
 const SOAP_ENV_NS: &str = "http://schemas.xmlsoap.org/soap/envelope/";
 
 #[derive(Debug)]
@@ -161,12 +163,6 @@ pub fn build_fault_body(fault: &SoapFault) -> String {
     s.push_str("</s:Body>");
     s.push_str("</s:Envelope>");
     s
-}
-
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 #[cfg(test)]
