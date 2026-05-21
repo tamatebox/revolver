@@ -147,10 +147,13 @@ fn search_albums(
 /// | Rank | Match                                                |
 /// |------|------------------------------------------------------|
 /// | 0    | album name == X (exact, normalized)                  |
-/// | 1    | album name contains X                                |
-/// | 2    | effective_album_artist contains X (artist's own)     |
+/// | 1    | effective_album_artist contains X (artist's own)     |
+/// | 2    | album name contains X                                |
 /// | 3    | only a track-level `tracks.artist` carries X (comp)  |
 ///
+/// Rationale: an artist-name query (e.g. "Beatles") usually means "show me
+/// this person's records", so the artist-hit bucket beats a partial-album
+/// hit like "Beatles Anthology" that happens to carry the same substring.
 /// Same `?1` (the `%X%` LIKE value) is referenced from both the WHERE
 /// clause and the CASE; `?2` is the exact-match value (no `%`).
 fn search_albums_ranked(
@@ -179,8 +182,8 @@ fn search_albums_ranked(
          ORDER BY
            CASE
              WHEN album_norm = ?2 THEN 0
-             WHEN album_norm LIKE ?1 THEN 1
-             WHEN effective_album_artist_norm LIKE ?1 THEN 2
+             WHEN effective_album_artist_norm LIKE ?1 THEN 1
+             WHEN album_norm LIKE ?1 THEN 2
              ELSE 3
            END,
            album_norm
@@ -909,8 +912,8 @@ mod tests {
     fn st1e_album_class_dc_title_orders_by_rank_buckets() {
         // 4 albums covering each rank bucket of the ranked Album-search path:
         //   rank 0 — album name == "Foo" exactly
-        //   rank 1 — album name contains "Foo" (partial)
-        //   rank 2 — album_artist contains "Foo" (artist's own record)
+        //   rank 1 — album_artist contains "Foo" (artist's own record)
+        //   rank 2 — album name contains "Foo" (partial)
         //   rank 3 — only a track-level artist carries "Foo" (compilation)
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
@@ -990,7 +993,7 @@ mod tests {
         let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
         assert_eq!(r.total_matches, 4);
         let titles: Vec<&str> = r.didl.containers.iter().map(|c| c.title.as_str()).collect();
-        assert_eq!(titles, vec!["Foo", "Foo Extra", "Solo", "Mix Tape"]);
+        assert_eq!(titles, vec!["Foo", "Solo", "Foo Extra", "Mix Tape"]);
     }
 
     // ── Artist class (Linn's Artist field) ────────────────────────────────
