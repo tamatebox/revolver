@@ -3,7 +3,7 @@ use std::net::IpAddr;
 use axum::extract::{DefaultBodyLimit, Request};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{any, delete, get, post};
 use axum::Router;
 use tower::limit::ConcurrencyLimitLayer;
@@ -43,8 +43,10 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/rescan", post(admin::rescan))
         .route("/admin/reshuffle", post(admin::reshuffle))
         .route("/admin/stats", get(admin::stats))
-        .route("/admin/ui", get(admin::ui))
-        .route("/admin/", get(admin::ui))
+        // SPEC §8.1: admin UI canonical URL is `/`. `/admin/ui` and `/admin/`
+        // remain as backward-compat redirects so existing bookmarks keep working.
+        .route("/admin/ui", get(|| async { Redirect::permanent("/") }))
+        .route("/admin/", get(|| async { Redirect::permanent("/") }))
         .route(
             "/admin/config",
             get(admin_config::get_config).post(admin_config::post_config),
@@ -63,6 +65,7 @@ pub fn router(state: AppState) -> Router {
         .layer(DefaultBodyLimit::max(MAX_SOAP_BODY_BYTES));
 
     Router::new()
+        .route("/", get(admin::ui))
         .route("/description.xml", get(upnp::description))
         .route("/scpd/cd.xml", get(upnp::scpd_cd))
         .route("/scpd/cm.xml", get(upnp::scpd_cm))
@@ -84,11 +87,11 @@ pub fn router(state: AppState) -> Router {
 /// - If an `Origin` header is present, parse its host and require it to be a
 ///   **LAN private IP** (RFC1918 / loopback / link-local). Public IPs / DNS names are rejected.
 /// - If `Origin` is absent, pass through (normal requests from curl / non-`mode: 'no-cors'`
-///   fetch, local CLI tools, and same-origin fetches from `/admin/ui` itself).
+///   fetch, local CLI tools, and same-origin fetches from the admin UI itself).
 ///
 /// This implementation focuses on "CSRF from a malicious external web page"
 /// (blocking on the assumption that an attacker page cannot forge Origin).
-/// CLI usage and the `/admin/ui` experience are unaffected.
+/// CLI usage and the admin UI experience are unaffected.
 async fn admin_csrf_guard(request: Request, next: Next) -> Response {
     if let Some(origin_value) = request.headers().get("origin") {
         let origin = match origin_value.to_str() {
@@ -234,7 +237,7 @@ mod tests {
 
     #[tokio::test]
     async fn ag2_admin_with_lan_origin_passes_through() {
-        // Fetches from /admin/ui are same-origin (LAN IP) → pass through.
+        // Fetches from the admin UI are same-origin (LAN IP) → pass through.
         let app = ok_app();
         let resp = app
             .oneshot(

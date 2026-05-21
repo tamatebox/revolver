@@ -5,19 +5,21 @@ Single binary, SQLite-backed, LAN-only.
 
 ## Features
 
-- **Library scanner** — FLAC / WAV / AIFF / ALAC / M4A (AAC) / MP3. High-resolution audio (up to 24-bit / 192 kHz) supported. Compilation detection, deletion detection, and automatic quality classification.
+- **Library scanner** — FLAC / WAV / AIFF / ALAC / M4A (AAC) / MP3. High-resolution audio (up to 24-bit / 192 kHz) supported. Compilation detection, deletion detection, automatic quality classification, and ReplayGain capture (coverage surfaced via `/admin/stats`).
 - **UPnP/DLNA discovery** — Announced over SSDP, visible to standard UPnP control points.
-- **Browse** — Top-level categories:
+- **Browse** — Top-level facets (selection + order configurable via `browse.top_level`):
   - Album Artist / Artist / Album / Genre
   - Recently Added (flat album list, optionally capped by count + age in days)
   - Recently Played (counted by stream hits)
   - Random Albums (reshuffled on startup, after each scan, or on demand)
   - Hi-Res / Lossy / Mixed Quality
-- **Search** — class-aware: Album search returns album containers, Artist search returns artist containers, Track / global search ORs across `dc:title` / `upnp:album` / `upnp:artist` / `upnp:genre`. Recognizes `upnp:class derivedfrom`, `and` / `or` / parens, and the `upnp:artist[@role="..."]` attribute filter.
+  - Composer / Conductor / Performer — classical-music facets, surfaced only when the library has matching tags
+  - Year / Decade — release-year facets, surfaced only when any track carries a year tag
+- **Search** — class-aware: Album search returns album containers, Artist search returns artist containers, Track / global search ORs across `dc:title` / `upnp:album` / `upnp:artist` / `upnp:genre`. Recognizes `upnp:class derivedfrom`, `and` / `or` / parens, and the `upnp:artist[@role="..."]` attribute filter. **Fuzzy matching** folds accents, halfwidth / fullwidth Latin, and katakana ↔ hiragana so `Bjork` matches `Björk`, `Beatles` matches `Ｂｅａｔｌｅｓ`, and `みゆき` matches `ミユキ`.
 - **HTTP streaming with Range Request** — Strict support for all Range forms (`bytes=N-M`, `N-`, `-N` suffix). Gapless playback works.
 - **Album art** — Embedded artwork first, then folder images (`cover.*` / `folder.*` / `front.*` / etc., case-insensitive). On-demand extraction with a small in-memory cache.
 - **GENA events** — `SUBSCRIBE` / `NOTIFY` with `SystemUpdateID` auto-increment, so control points refresh automatically after rescans.
-- **Web admin UI** — Single-page UI at `/admin/ui` with scan trigger, reshuffle, live stats, in-flight scan progress, and runtime settings editor (backed by a REST config API). No external dependencies.
+- **Web admin UI** — Single-page UI at `/` with scan trigger, reshuffle, live stats, in-flight scan progress, and runtime settings editor (backed by a REST config API). No external dependencies.
 
 ## Compatibility
 
@@ -54,7 +56,7 @@ curl http://localhost:8200/description.xml
 curl -s http://localhost:8200/admin/stats | jq
 
 # Web UI (scan, reshuffle, stats)
-open http://localhost:8200/admin/ui
+open http://localhost:8200/
 ```
 
 `Ctrl-C` triggers a graceful shutdown (an SSDP `byebye` is sent before exit).
@@ -76,10 +78,11 @@ Edit `config.toml`. The most relevant fields:
 | `browse.recently_added_max_age_days` | Optional age cap (omit / `null` = show all by recency) |
 | `browse.random_albums_limit` | Cap for "Random Albums" |
 | `browse.quality_categories` | Show Hi-Res / Lossy / Mixed top-level categories |
+| `browse.top_level` | Selection + order of top-level facets (drop entries to hide; unknown / empty entries are silently skipped) |
 
 See [`config.toml.example`](config.toml.example) for the full schema.
 
-The `[browse]` keys (and any future runtime-tier keys) can also be edited live via the admin UI (`/admin/ui` → Settings) or the REST API:
+The `[browse]` keys (and any future runtime-tier keys) can also be edited live via the admin UI (`/` → Settings) or the REST API:
 
 ```sh
 curl http://localhost:8200/admin/config                                # list with defaults / source / restart_required
