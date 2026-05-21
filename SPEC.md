@@ -36,7 +36,7 @@ A simple UPnP/DLNA MediaServer for personal music libraries.
 | Item | Decision |
 |---|---|
 | OpenHome extensions | Not applicable (renderer-side feature, unrelated to the server). |
-| Vendor-specific control-point extensions (`X_MAP_*`, etc.) | Not implemented. |
+| Vendor-specific control-point extensions (`X_MAP_*`, Sonos `r:`, etc.) | Not currently emitted; case-by-case per §10.2. |
 | External access / Subsonic API | Out of scope. Use a VPN (e.g., Tailscale) if needed. |
 | Last-played / play history | Stream-hit counting is implemented (§6.8); full play history via OpenHome Info subscribe is future work. |
 | Transcoding | Not planned. Files are served as-is. |
@@ -1298,9 +1298,12 @@ Only `SystemUpdateID` is evented. `ContainerUpdateIDs` is not implemented.
 
 ## 10. Cross-Client Compatibility
 
-The implementation stays inside **UPnP AV 1.0** so that any compliant control
-point or renderer can use the server. Vendor-specific extensions
-(`X_MAP_*`, Sonos `r:` namespace, etc.) are not implemented.
+The implementation stays inside **UPnP AV 1.0** for everything visible to
+client payloads (DIDL-Lite responses, SearchCriteria parsing, ObjectIDs,
+container hierarchy) so any compliant control point or renderer can use the
+server. Vendor extensions outside that payload surface (device-description
+hints, vendor-namespaced DIDL elements) are evaluated case-by-case under
+the policy in §10.2.
 
 ### 10.1 What is Standards-Compliant
 
@@ -1312,18 +1315,38 @@ point or renderer can use the server. Vendor-specific extensions
 | ContentDirectory hierarchy | Standard only. Feature views (e.g., quality categories) are realized via the container tree. |
 | MIME types | Use mainstream values: `audio/flac`, `audio/mp4`, `audio/mpeg`, `audio/x-wav`, `audio/x-aiff`. |
 
-### 10.2 Extensions Not Used
+### 10.2 Vendor Extension Policy
 
-- **No vendor-specific Media Server extensions** (`X_MAP_BROWSE_ENTRY`, etc.):
-  irrelevant to other clients, and pure maintenance burden.
-- **No Sonos `r:` namespace** (Sonos-only). This is why **ReplayGain values
-  are stored but not surfaced in DIDL-Lite** (#11) — no standard UPnP
-  element exists for gain/peak. The values live on `tracks.rg_*` and are
-  exposed only via `/admin/stats` (`tracks_with_replaygain`) until a
-  standard emerges.
-- **`upnp:longDescription` is not used for important data**: rendering is
-  inconsistent across clients. If information matters, put it in `dc:title`
-  or in a dedicated container.
+The default is no vendor extensions, but they may be adopted case-by-case
+when **all three** of the following hold:
+
+1. **Verifiable on real hardware** — at least one shipping client that
+   implements the extension is available for manual testing (currently:
+   Linn DSM/2, Sonos).
+2. **Invisible to other clients** — non-supporting clients ignore the
+   element by standard XML namespace rules, so adoption causes no
+   regression.
+3. **Measurable improvement** — the extension delivers observable UX or
+   playback-behavior improvement on the target client; "speculatively
+   useful" is not enough.
+
+Extensions that fail any of these stay out until they pass.
+
+**Currently not emitted** (status, not absolute policy):
+
+- **Linn `X_MAP_*` family** (`X_MAP_BROWSE_ENTRY`, etc.) — PoC pending
+  (#25). Lives in device.xml, would hint top-level facet hierarchy to
+  Linn Kazoo.
+- **Sonos `r:` namespace** (`r:gain`, `r:peakValue`, etc.) — PoC pending.
+  Lives in DIDL-Lite. ReplayGain values are already stored on
+  `tracks.rg_*` (#11) and `/admin/stats.tracks_with_replaygain` exposes
+  coverage; DIDL emission awaits Sonos-side behavior verification.
+
+**Not used regardless of vendor support:**
+
+- **`upnp:longDescription` for important data** — rendering is
+  inconsistent across clients. If information matters, put it in
+  `dc:title` or in a dedicated container.
 
 ### 10.3 protocolInfo Flexibility
 
