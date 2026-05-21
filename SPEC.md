@@ -616,6 +616,30 @@ Both are exposed via the config API (#13) so per-user tuning is one POST away.
 - These are standard ContentDirectory containers, so they look the same in
   every compliant control point.
 
+**Configurable selection and order** (#8). The set above is the default;
+`browse.top_level` overrides both selection and order:
+
+```toml
+[browse]
+top_level = [
+  "cat:aa", "cat:al",
+  "cat:recent", "cat:played",
+  "cat:hires",
+]
+```
+
+Rules:
+
+- Iteration order follows the array.
+- Unknown IDs are silently dropped (so adding new facets in a future version
+  does not require a config rewrite).
+- `cat:hires` / `cat:lossy` / `cat:mixed` still respect
+  `browse.quality_categories = false` (the higher-level switch wins).
+- `cat:cm` / `cat:cn` / `cat:pf` still self-hide on libraries with no
+  populated rows (#9 keeps the root clean on non-classical collections).
+- Duplicates after the first occurrence are dropped.
+- Editable at runtime via `/admin/config` (`ReloadTier::Runtime`).
+
 ### 6.3 Container object class
 
 | ObjectID | dc:title | upnp:class |
@@ -1245,6 +1269,10 @@ random_albums_limit = 100
 # Whether to surface the quality categories (Hi-Res / Lossy / Mixed) at the top level.
 # Recommended on. Empty categories are hidden automatically.
 quality_categories = true
+
+# Selection and order of top-level facets at ObjectID "0" (#8, §6.2).
+# Default: the full canonical list. Unknown / disabled entries are silently dropped.
+# top_level = ["cat:aa", "cat:al", "cat:recent", "cat:played", "cat:hires"]
 
 # Optional: decorate album titles with a quality tag.
 # Example: "Album Name [Hi-Res 24/96]"

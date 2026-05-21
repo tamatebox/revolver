@@ -74,7 +74,7 @@ pub struct BrowseContext<'a> {
 pub fn browse_metadata(ctx: &BrowseContext, id: &ObjectId) -> Result<DidlOutput> {
     use categories::{genre_container, person_container, plain_cat, root_container};
     match id {
-        ObjectId::Root => Ok(single(root_container())),
+        ObjectId::Root => Ok(single(root_container(ctx))),
         ObjectId::CatAa => Ok(single(plain_cat("cat:aa", "0", "Album Artist"))),
         ObjectId::CatAr => Ok(single(plain_cat("cat:ar", "0", "Artist"))),
         ObjectId::CatAl => Ok(single(plain_cat("cat:al", "0", "Album"))),

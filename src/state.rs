@@ -24,6 +24,11 @@ pub struct BrowseSettings {
     /// Whether to expose `cat:hires` / `cat:lossy` / `cat:mixed` in the root
     /// container (SPEC §6.2). When false, all three are hidden from the root.
     pub quality_categories: bool,
+    /// Selection and order of root-container facets (#8, SPEC §6.2). Unknown
+    /// or disabled entries are silently dropped by `root_children`.
+    /// `quality_categories=false` further suppresses any quality entries that
+    /// remain.
+    pub top_level: Vec<String>,
 }
 
 /// Runtime state shared by HTTP handlers and SSDP tasks (ARCHITECTURE.md §1).
@@ -101,12 +106,14 @@ impl BrowseSettings {
         recently_added_max_age_days: Option<u32>,
         random_albums_limit: usize,
         quality_categories: bool,
+        top_level: Vec<String>,
     ) -> Self {
         Self {
             recently_added_limit: recently_added_limit.max(1),
             recently_added_max_age_days,
             random_albums_limit: random_albums_limit.max(1),
             quality_categories,
+            top_level,
         }
     }
 }
@@ -118,6 +125,7 @@ impl Default for BrowseSettings {
             recently_added_max_age_days: None,
             random_albums_limit: 1000,
             quality_categories: true,
+            top_level: crate::config::default_top_level(),
         }
     }
 }

@@ -63,6 +63,13 @@ pub struct Browse {
     pub random_albums_limit: usize,
     pub quality_categories: bool,
 
+    /// Selection and order of top-level facets surfaced at ObjectID "0"
+    /// (SPEC §6.2, issue #8). Unknown / disabled entries are silently
+    /// dropped at render time. Defaults to the full canonical list — same
+    /// behavior as pre-#8 for users who do not set this key.
+    #[serde(default = "default_top_level")]
+    pub top_level: Vec<String>,
+
     #[serde(default)]
     pub quality_in_title: bool,
     #[serde(default = "default_quality_in_title_format")]
@@ -75,6 +82,29 @@ pub struct Browse {
 
 fn default_quality_in_title_format() -> String {
     "[{q}]".to_string()
+}
+
+/// Default top-level facet order (SPEC §6.2). Kept in sync with the
+/// hard-coded order in `browse::categories::root_children` prior to #8.
+pub fn default_top_level() -> Vec<String> {
+    [
+        "cat:aa",
+        "cat:ar",
+        "cat:al",
+        "cat:gn",
+        "cat:recent",
+        "cat:played",
+        "cat:random",
+        "cat:hires",
+        "cat:lossy",
+        "cat:mixed",
+        "cat:cm",
+        "cat:cn",
+        "cat:pf",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 fn default_quality_in_title_include() -> Vec<String> {

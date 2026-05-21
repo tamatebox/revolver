@@ -81,6 +81,12 @@ pub const CATALOG: &[ConfigKey] = &[
         default: default_quality_categories,
         validate: validate_bool,
     },
+    ConfigKey {
+        key: "browse.top_level",
+        reload_tier: ReloadTier::Runtime,
+        default: default_top_level,
+        validate: validate_string_array,
+    },
 ];
 
 pub fn find(key: &str) -> Option<&'static ConfigKey> {
@@ -106,6 +112,10 @@ fn default_quality_categories(c: &Config) -> Value {
     serde_json::json!(c.browse.quality_categories)
 }
 
+fn default_top_level(c: &Config) -> Value {
+    serde_json::json!(c.browse.top_level)
+}
+
 fn validate_positive_int(v: &Value) -> std::result::Result<Value, String> {
     match v.as_u64() {
         Some(n) if n >= 1 => Ok(Value::from(n)),
@@ -125,6 +135,29 @@ fn validate_bool(v: &Value) -> std::result::Result<Value, String> {
     v.as_bool()
         .map(Value::from)
         .ok_or_else(|| "must be a boolean".to_string())
+}
+
+/// Validator for `browse.top_level` (#8): array of strings, deduped while
+/// preserving first occurrence. Unknown facet IDs are accepted here and
+/// silently dropped at render time (so forward-compatible additions to
+/// the facet catalog do not require a config rewrite).
+fn validate_string_array(v: &Value) -> std::result::Result<Value, String> {
+    let arr = v.as_array().ok_or_else(|| "must be an array".to_string())?;
+    // Cap to keep abuse / accidental megabytes out of the override row.
+    if arr.len() > 64 {
+        return Err("at most 64 entries".to_string());
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(arr.len());
+    for (i, item) in arr.iter().enumerate() {
+        let s = item
+            .as_str()
+            .ok_or_else(|| format!("entry {i} must be a string"))?;
+        if seen.insert(s.to_string()) {
+            out.push(Value::from(s));
+        }
+    }
+    Ok(Value::Array(out))
 }
 
 /// Capture toml defaults for every catalog key. Called once at startup; the
@@ -169,11 +202,20 @@ pub fn build_browse_settings(defaults: &DefaultsMap, conn: &Connection) -> Resul
     let quality_categories = effective_value(defaults, conn, "browse.quality_categories")?
         .as_bool()
         .unwrap_or(true);
+    let top_level = effective_value(defaults, conn, "browse.top_level")?
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(crate::config::default_top_level);
     Ok(BrowseSettings::from_parts(
         recently,
         max_age_days,
         random,
         quality_categories,
+        top_level,
     ))
 }
 
@@ -277,5 +319,33 @@ quality_categories   = true
         assert_eq!(s.recently_added_limit, 50);
         assert_eq!(s.random_albums_limit, 100);
         assert!(s.quality_categories);
+        assert_eq!(s.top_level, crate::config::default_top_level());
+    }
+
+    #[test]
+    fn cc9_validate_string_array_accepts_and_dedupes() {
+        let v = validate_string_array(&serde_json::json!(["cat:aa", "cat:al", "cat:aa"])).unwrap();
+        assert_eq!(v, serde_json::json!(["cat:aa", "cat:al"]));
+    }
+
+    #[test]
+    fn cc10_validate_string_array_rejects_non_array_and_non_string() {
+        assert!(validate_string_array(&serde_json::json!("nope")).is_err());
+        assert!(validate_string_array(&serde_json::json!(["cat:aa", 1])).is_err());
+    }
+
+    #[test]
+    fn cc11_validate_string_array_caps_length() {
+        let many: Vec<String> = (0..65).map(|i| format!("cat:{i}")).collect();
+        assert!(validate_string_array(&serde_json::json!(many)).is_err());
+    }
+
+    #[test]
+    fn cc12_top_level_override_picked_up() {
+        let conn = open_in_memory();
+        let defaults = precompute_defaults(&sample_config());
+        config_overrides::set(&conn, "browse.top_level", r#"["cat:aa","cat:played"]"#, 0).unwrap();
+        let s = build_browse_settings(&defaults, &conn).unwrap();
+        assert_eq!(s.top_level, vec!["cat:aa", "cat:played"]);
     }
 }

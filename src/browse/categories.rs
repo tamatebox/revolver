@@ -9,36 +9,27 @@ use crate::error::Result;
 use crate::upnp::didl::Container;
 use crate::upnp::object_id::{self, ObjectId};
 
-/// Children of Root (`"0"`): returns 7 or 10 category containers (SPEC §6.2).
+/// Children of Root (`"0"`): selection + order driven by
+/// `browse.top_level` (#8, SPEC §6.2).
 ///
-/// Order follows the SPEC §6.2 tree. If `browse.quality_categories = false`,
-/// Hi-Res / Lossy / Mixed are hidden from root (SPEC §6.2 Phase 3 toggle).
+/// Iteration order follows the configured array. For each entry:
+/// - Unknown IDs are silently dropped (forward-compat with future facets).
+/// - `cat:hires` / `cat:lossy` / `cat:mixed` are dropped when
+///   `browse.quality_categories = false`.
+/// - `cat:cm` / `cat:cn` / `cat:pf` are dropped when the library has no
+///   rows in the corresponding column (keeps the root clean on
+///   non-classical libraries — #9).
+/// - Duplicates after the first occurrence are dropped.
 pub fn root_children(ctx: &BrowseContext) -> ChildrenResult {
-    let mut containers = vec![
-        plain_cat("cat:aa", "0", "Album Artist"),
-        plain_cat("cat:ar", "0", "Artist"),
-        plain_cat("cat:al", "0", "Album"),
-        plain_cat("cat:gn", "0", "Genre"),
-        plain_cat("cat:recent", "0", "Recently Added"),
-        plain_cat("cat:played", "0", "Recently Played"),
-        plain_cat("cat:random", "0", "Random Albums"),
-    ];
-    if ctx.settings.quality_categories {
-        containers.push(plain_cat("cat:hires", "0", "Hi-Res Albums"));
-        containers.push(plain_cat("cat:lossy", "0", "Lossy Albums"));
-        containers.push(plain_cat("cat:mixed", "0", "Mixed Quality"));
-    }
-    // #9: classical facets — surface only when the library has any populated rows.
-    // (A library with zero composers/conductors/performers is the common case for
-    // non-classical collections; hiding empty categories keeps the root clean.)
-    if facet_has_any(ctx, "composer").unwrap_or(false) {
-        containers.push(plain_cat("cat:cm", "0", "Composer"));
-    }
-    if facet_has_any(ctx, "conductor").unwrap_or(false) {
-        containers.push(plain_cat("cat:cn", "0", "Conductor"));
-    }
-    if facet_has_any(ctx, "performer").unwrap_or(false) {
-        containers.push(plain_cat("cat:pf", "0", "Performer"));
+    let mut containers = Vec::with_capacity(ctx.settings.top_level.len());
+    let mut seen = std::collections::HashSet::new();
+    for id in &ctx.settings.top_level {
+        if !seen.insert(id.as_str()) {
+            continue;
+        }
+        if let Some(c) = build_root_facet(ctx, id) {
+            containers.push(c);
+        }
     }
     let total = containers.len();
     ChildrenResult {
@@ -48,6 +39,40 @@ pub fn root_children(ctx: &BrowseContext) -> ChildrenResult {
             nodes: vec![],
         },
         total_matches: total,
+    }
+}
+
+/// Builds one root-level facet container. Returns `None` if the ID is unknown
+/// or the facet is currently disabled (`quality_categories=false`, or a
+/// classical column with no populated rows).
+fn build_root_facet(ctx: &BrowseContext, id: &str) -> Option<Container> {
+    match id {
+        "cat:aa" => Some(plain_cat("cat:aa", "0", "Album Artist")),
+        "cat:ar" => Some(plain_cat("cat:ar", "0", "Artist")),
+        "cat:al" => Some(plain_cat("cat:al", "0", "Album")),
+        "cat:gn" => Some(plain_cat("cat:gn", "0", "Genre")),
+        "cat:recent" => Some(plain_cat("cat:recent", "0", "Recently Added")),
+        "cat:played" => Some(plain_cat("cat:played", "0", "Recently Played")),
+        "cat:random" => Some(plain_cat("cat:random", "0", "Random Albums")),
+        "cat:hires" if ctx.settings.quality_categories => {
+            Some(plain_cat("cat:hires", "0", "Hi-Res Albums"))
+        }
+        "cat:lossy" if ctx.settings.quality_categories => {
+            Some(plain_cat("cat:lossy", "0", "Lossy Albums"))
+        }
+        "cat:mixed" if ctx.settings.quality_categories => {
+            Some(plain_cat("cat:mixed", "0", "Mixed Quality"))
+        }
+        "cat:cm" if facet_has_any(ctx, "composer").unwrap_or(false) => {
+            Some(plain_cat("cat:cm", "0", "Composer"))
+        }
+        "cat:cn" if facet_has_any(ctx, "conductor").unwrap_or(false) => {
+            Some(plain_cat("cat:cn", "0", "Conductor"))
+        }
+        "cat:pf" if facet_has_any(ctx, "performer").unwrap_or(false) => {
+            Some(plain_cat("cat:pf", "0", "Performer"))
+        }
+        _ => None,
     }
 }
 
@@ -265,13 +290,16 @@ pub fn genres_children(ctx: &BrowseContext, start: usize, count: usize) -> Resul
 
 // ── Container builder helpers ────────────────────────────────────────────
 
-pub(crate) fn root_container() -> Container {
+pub(crate) fn root_container(ctx: &BrowseContext) -> Container {
+    // childCount is informational; recompute from the same top_level pipeline
+    // so it stays consistent with what a follow-up DirectChildren returns.
+    let count = root_children(ctx).total_matches as i64;
     Container {
         id: "0".to_string(),
         parent_id: "-1".to_string(),
         title: "Music Library".to_string(),
         upnp_class: "object.container",
-        child_count: Some(10),
+        child_count: Some(count),
         artist: None,
         album_art_uri: None,
     }
@@ -354,7 +382,13 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::schema::migrate(&conn).unwrap();
         let rs = RandomState::new();
-        let s = BrowseSettings::from_parts(50, None, 100, false); // quality_categories = false
+        let s = BrowseSettings::from_parts(
+            50,
+            None,
+            100,
+            false, // quality_categories = false
+            crate::config::default_top_level(),
+        );
         let r = root_children(&ctx_with(&conn, &rs, &s));
         assert_eq!(r.total_matches, 7);
         let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
@@ -373,5 +407,113 @@ mod tests {
         ] {
             assert!(ids.contains(&expected), "missing {}", expected);
         }
+    }
+
+    #[test]
+    fn cr3_top_level_order_drives_root() {
+        // Issue #8: array order is the order surfaced by Browse.
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::migrate(&conn).unwrap();
+        let rs = RandomState::new();
+        let s = BrowseSettings::from_parts(
+            50,
+            None,
+            100,
+            true,
+            vec![
+                "cat:recent".into(),
+                "cat:al".into(),
+                "cat:aa".into(),
+                "cat:played".into(),
+            ],
+        );
+        let r = root_children(&ctx_with(&conn, &rs, &s));
+        let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["cat:recent", "cat:al", "cat:aa", "cat:played"]);
+        assert_eq!(r.total_matches, 4);
+    }
+
+    #[test]
+    fn cr4_top_level_drops_unknown_and_duplicates() {
+        // Unknown IDs ("cat:nope") and duplicates after the first occurrence
+        // are silently dropped per issue #8 spec.
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::migrate(&conn).unwrap();
+        let rs = RandomState::new();
+        let s = BrowseSettings::from_parts(
+            50,
+            None,
+            100,
+            true,
+            vec![
+                "cat:aa".into(),
+                "cat:nope".into(),
+                "cat:aa".into(), // duplicate
+                "cat:played".into(),
+            ],
+        );
+        let r = root_children(&ctx_with(&conn, &rs, &s));
+        let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["cat:aa", "cat:played"]);
+    }
+
+    #[test]
+    fn cr5_quality_categories_false_overrides_top_level() {
+        // When quality_categories = false, hi-res / lossy / mixed must not
+        // appear even if explicitly listed in top_level.
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::migrate(&conn).unwrap();
+        let rs = RandomState::new();
+        let s = BrowseSettings::from_parts(
+            50,
+            None,
+            100,
+            false, // quality_categories = false
+            vec![
+                "cat:aa".into(),
+                "cat:hires".into(),
+                "cat:lossy".into(),
+                "cat:mixed".into(),
+                "cat:al".into(),
+            ],
+        );
+        let r = root_children(&ctx_with(&conn, &rs, &s));
+        let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["cat:aa", "cat:al"]);
+    }
+
+    #[test]
+    fn cr6_classical_facets_self_hide_when_empty() {
+        // On a library with no composer/conductor/performer rows,
+        // cat:cm / cat:cn / cat:pf are dropped even when listed.
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::migrate(&conn).unwrap();
+        let rs = RandomState::new();
+        let s = BrowseSettings::from_parts(
+            50,
+            None,
+            100,
+            true,
+            vec![
+                "cat:aa".into(),
+                "cat:cm".into(),
+                "cat:cn".into(),
+                "cat:pf".into(),
+            ],
+        );
+        let r = root_children(&ctx_with(&conn, &rs, &s));
+        let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["cat:aa"]);
+    }
+
+    #[test]
+    fn cr7_empty_top_level_returns_no_children() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::migrate(&conn).unwrap();
+        let rs = RandomState::new();
+        let s = BrowseSettings::from_parts(50, None, 100, true, vec![]);
+        let r = root_children(&ctx_with(&conn, &rs, &s));
+        assert_eq!(r.total_matches, 0);
+        assert!(r.didl.containers.is_empty());
     }
 }

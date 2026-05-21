@@ -34,6 +34,19 @@ random_albums_limit  = 100
 # Recommended on. Empty categories are hidden automatically.
 quality_categories = true
 
+# Selection and order of top-level facets at ObjectID "0" (#8, SPEC §6.2).
+# Default: the full canonical list, no behavior change versus pre-#8.
+# Drop entries to hide them, or reorder to taste. Unknown / disabled entries
+# (quality categories when `quality_categories = false`; classical facets on a
+# library with no composer / conductor / performer rows) are silently skipped.
+# Editable at runtime via /admin/config.
+# top_level = [
+#   "cat:aa", "cat:ar", "cat:al", "cat:gn",
+#   "cat:recent", "cat:played", "cat:random",
+#   "cat:hires", "cat:lossy", "cat:mixed",
+#   "cat:cm", "cat:cn", "cat:pf",
+# ]
+
 # Decorate album titles with a quality tag (default off).
 # Example: "Album Name [Hi-Res 24/96]"
 quality_in_title         = false
