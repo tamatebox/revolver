@@ -74,7 +74,10 @@ fn handle_browse(
 
     let object_id = object_id::parse(object_id_str).ok_or_else(soap::SoapFault::no_such_object)?;
 
-    let conn = pool.get().map_err(|_| soap::SoapFault::internal_error())?;
+    let conn = pool.get().map_err(|e| {
+        tracing::error!(error = %e, action = "Browse", "db pool acquisition failed");
+        soap::SoapFault::internal_error()
+    })?;
     let art_base = format!("http://{}:{}/art", state.local_ip, state.http_port);
     let stream_base = format!("http://{}:{}/stream", state.local_ip, state.http_port);
     let now_secs = std::time::SystemTime::now()
@@ -84,7 +87,10 @@ fn handle_browse(
     let browse_settings = state
         .browse
         .read()
-        .map_err(|_| soap::SoapFault::internal_error())?
+        .map_err(|e| {
+            tracing::error!(error = %e, action = "Browse", "browse settings lock poisoned");
+            soap::SoapFault::internal_error()
+        })?
         .clone();
     let ctx = BrowseContext {
         conn: &conn,
@@ -98,14 +104,33 @@ fn handle_browse(
 
     let (output, num_returned, total_matches) = match browse_flag.as_str() {
         "BrowseMetadata" => {
-            let output = browse::browse_metadata(&ctx, &object_id)
-                .map_err(|_| soap::SoapFault::no_such_object())?;
+            let output = browse::browse_metadata(&ctx, &object_id).map_err(|e| {
+                tracing::error!(
+                    error = %e,
+                    action = "Browse",
+                    flag = "BrowseMetadata",
+                    object_id = %object_id_str,
+                    "browse_metadata failed",
+                );
+                soap::SoapFault::no_such_object()
+            })?;
             let n = didl_count(&output);
             (output, n, n)
         }
         "BrowseDirectChildren" => {
-            let result = browse::browse_children(&ctx, &object_id, starting_index, count)
-                .map_err(|_| soap::SoapFault::no_such_object())?;
+            let result =
+                browse::browse_children(&ctx, &object_id, starting_index, count).map_err(|e| {
+                    tracing::error!(
+                        error = %e,
+                        action = "Browse",
+                        flag = "BrowseDirectChildren",
+                        object_id = %object_id_str,
+                        starting_index,
+                        count,
+                        "browse_children failed",
+                    );
+                    soap::SoapFault::no_such_object()
+                })?;
             let n = didl_count(&result.didl);
             (result.didl, n, result.total_matches)
         }
@@ -164,7 +189,10 @@ fn handle_search(
         "ContentDirectory Search received"
     );
 
-    let conn = pool.get().map_err(|_| soap::SoapFault::internal_error())?;
+    let conn = pool.get().map_err(|e| {
+        tracing::error!(error = %e, action = "Search", "db pool acquisition failed");
+        soap::SoapFault::internal_error()
+    })?;
     let art_base = format!("http://{}:{}/art", state.local_ip, state.http_port);
     let stream_base = format!("http://{}:{}/stream", state.local_ip, state.http_port);
     let now_secs = std::time::SystemTime::now()
@@ -174,7 +202,10 @@ fn handle_search(
     let browse_settings = state
         .browse
         .read()
-        .map_err(|_| soap::SoapFault::internal_error())?
+        .map_err(|e| {
+            tracing::error!(error = %e, action = "Search", "browse settings lock poisoned");
+            soap::SoapFault::internal_error()
+        })?
         .clone();
     let ctx = BrowseContext {
         conn: &conn,
@@ -185,8 +216,17 @@ fn handle_search(
         settings: &browse_settings,
     };
 
-    let result = browse_search::search_tracks(&ctx, &expr, starting_index, count)
-        .map_err(|_| soap::SoapFault::internal_error())?;
+    let result = browse_search::search_tracks(&ctx, &expr, starting_index, count).map_err(|e| {
+        tracing::error!(
+            error = %e,
+            action = "Search",
+            criteria = %criteria,
+            starting_index,
+            count,
+            "search_tracks failed",
+        );
+        soap::SoapFault::internal_error()
+    })?;
     let update_id = read_update_id(&conn).unwrap_or(0);
 
     let didl_xml = didl::build_didl(&result.didl.containers, &result.didl.items);
@@ -204,7 +244,10 @@ fn handle_search(
 }
 
 fn handle_system_update_id(pool: &Pool) -> Result<String, soap::SoapFault> {
-    let conn = pool.get().map_err(|_| soap::SoapFault::internal_error())?;
+    let conn = pool.get().map_err(|e| {
+        tracing::error!(error = %e, action = "GetSystemUpdateID", "db pool acquisition failed");
+        soap::SoapFault::internal_error()
+    })?;
     let id = read_update_id(&conn).unwrap_or(0);
     Ok(soap::build_response_body(
         "GetSystemUpdateID",
