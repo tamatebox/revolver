@@ -460,9 +460,9 @@ mod tests {
         crate::db::schema::migrate(&conn).unwrap();
         let rs = RandomState::new();
         let s = BrowseSettings::from_parts(
-            50,
+            Some(50),
             None,
-            100,
+            Some(100),
             vec![
                 "cat:recent".into(),
                 "cat:al".into(),
@@ -484,9 +484,9 @@ mod tests {
         crate::db::schema::migrate(&conn).unwrap();
         let rs = RandomState::new();
         let s = BrowseSettings::from_parts(
-            50,
+            Some(50),
             None,
-            100,
+            Some(100),
             vec![
                 "cat:aa".into(),
                 "cat:nope".into(),
@@ -506,7 +506,12 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::schema::migrate(&conn).unwrap();
         let rs = RandomState::new();
-        let s = BrowseSettings::from_parts(50, None, 100, vec!["cat:aa".into(), "cat:al".into()]);
+        let s = BrowseSettings::from_parts(
+            Some(50),
+            None,
+            Some(100),
+            vec!["cat:aa".into(), "cat:al".into()],
+        );
         let r = root_children(&ctx_with(&conn, &rs, &s));
         let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, vec!["cat:aa", "cat:al"]);
@@ -520,9 +525,9 @@ mod tests {
         crate::db::schema::migrate(&conn).unwrap();
         let rs = RandomState::new();
         let s = BrowseSettings::from_parts(
-            50,
+            Some(50),
             None,
-            100,
+            Some(100),
             vec![
                 "cat:aa".into(),
                 "cat:cm".into(),
@@ -540,7 +545,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::schema::migrate(&conn).unwrap();
         let rs = RandomState::new();
-        let s = BrowseSettings::from_parts(50, None, 100, vec![]);
+        let s = BrowseSettings::from_parts(Some(50), None, Some(100), vec![]);
         let r = root_children(&ctx_with(&conn, &rs, &s));
         assert_eq!(r.total_matches, 0);
         assert!(r.didl.containers.is_empty());

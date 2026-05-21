@@ -4,7 +4,7 @@
 //! `month` / `3months` / `year:YYYY` / `all`). Issue #16 flattened this:
 //! opening `cat:recent` now returns the album list directly, sorted by
 //! `albums.last_added_at` DESC, capped by:
-//! - `browse.recently_added_limit` (count cap),
+//! - `browse.recently_added_limit` (count cap; `None` = no count cap),
 //! - `browse.recently_added_max_age_days` (age cap; `None` = no age cap).
 //!
 //! `albums.last_added_at` is a denormalized column maintained by
@@ -37,7 +37,10 @@ pub fn recent_root_children(
         .map(|days| ctx.now_secs - (days as i64) * DAY_SECS);
 
     let actual = count_in_window(ctx, lower_bound)? as usize;
-    let total = actual.min(limit);
+    let total = match limit {
+        Some(cap) => actual.min(cap),
+        None => actual,
+    };
     let remaining = total.saturating_sub(start);
     let effective_count = count.min(remaining);
     let rows = if effective_count == 0 {
@@ -244,7 +247,7 @@ mod tests {
         limit: usize,
     ) -> (BrowseContext<'_>, BrowseSettings) {
         let settings = BrowseSettings {
-            recently_added_limit: limit,
+            recently_added_limit: Some(limit),
             ..BrowseSettings::default()
         };
         let rs = crate::random::RandomState::new();
@@ -282,6 +285,21 @@ mod tests {
         let page2 = recent_root_children(&ctx, 2, 100).unwrap();
         assert_eq!(page2.total_matches, 2);
         assert!(page2.didl.containers.is_empty());
+    }
+
+    #[test]
+    fn rr8_none_limit_returns_full_window() {
+        // None = no count cap; every album in the (no-age-cap) window comes back.
+        let conn = seed_with_added_at(&[
+            ("A", NOW_2024_01_01 - 5),
+            ("B", NOW_2024_01_01 - 4),
+            ("C", NOW_2024_01_01 - 3),
+            ("D", NOW_2024_01_01 - 2),
+            ("E", NOW_2024_01_01 - 1),
+        ]);
+        let r = recent_root_children(&ctx_at(&conn, NOW_2024_01_01), 0, 100).unwrap();
+        assert_eq!(r.total_matches, 5);
+        assert_eq!(r.didl.containers.len(), 5);
     }
 
     #[test]

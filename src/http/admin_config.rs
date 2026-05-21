@@ -106,11 +106,14 @@ pub async fn post_config(
     // user's limit change would not take visible effect until the next
     // scan / startup / explicit Reshuffle button press.
     if random_limit_touched {
+        // Poisoned lock degrades to `None` (= no cap) rather than skipping the
+        // reshuffle entirely; preserves the user-visible reshuffle behavior
+        // even in the (rare) poisoned-lock case.
         let new_limit = state
             .browse
             .read()
             .map(|s| s.random_albums_limit)
-            .unwrap_or(usize::MAX);
+            .unwrap_or(None);
         if let Err(e) = state.random_state.reshuffle(&conn, new_limit) {
             tracing::warn!(error = ?e, "auto-reshuffle after random_albums_limit change failed");
         }

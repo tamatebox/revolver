@@ -612,11 +612,13 @@ Name segments are **URL-safe base64** to avoid `/`, spaces, non-ASCII, etc.
 ```
 
 `cat:recent` returns an **album list directly**, sorted by
-`MAX(tracks.added_at) by album_id` DESC. Two settings cap what shows up:
+`MAX(tracks.added_at) by album_id` DESC. Two settings cap what shows up,
+both `null` (no cap) by default — out-of-the-box behavior is "show every
+album, most-recent first":
 
-- `browse.recently_added_limit` — max items returned.
+- `browse.recently_added_limit` — max items returned. `null` = no count cap.
 - `browse.recently_added_max_age_days` — albums older than N days are
-  excluded. `null` (default) means no age cap (show everything by recency).
+  excluded. `null` = no age cap.
 
 Both are exposed via the config API (#13) so per-user tuning is one POST away.
 
@@ -774,7 +776,7 @@ Two settings (both in `[browse]`, both editable via the config API of #13):
 
 | Setting | Default | Effect |
 |---|---|---|
-| `recently_added_limit` | `50` | Hard cap on items returned (also caps SOAP `RequestedCount`). |
+| `recently_added_limit` | `null` (no cap) | Hard cap on items returned (also caps SOAP `RequestedCount`). When `null` every album in the window comes back. |
 | `recently_added_max_age_days` | `null` (no cap) | Lower bound = `now - N*86400`. When `null` the WHERE clause has no age predicate. |
 
 `albums.last_added_at` is denormalized (`MAX(tracks.added_at) GROUP BY
@@ -1298,13 +1300,8 @@ watch = "auto"
 rescan_interval_minutes = 0
 
 [browse]
-recently_added_limit = 50
-random_albums_limit = 100
-
-# Selection and order of top-level facets at ObjectID "0" (#8, §6.2).
-# Default: the full canonical list. Drop entries (including Hi-Res / Lossy /
-# Mixed if you don't want quality categories) to hide them.
-# top_level = ["cat:aa", "cat:al", "cat:recent", "cat:played", "cat:hires"]
+# Runtime-tunable browse settings (top-level facet order, Recently Added /
+# Random Albums caps, age window) are managed via the admin UI — not toml.
 
 # Optional: decorate album titles with a quality tag.
 # Example: "Album Name [Hi-Res 24/96]"

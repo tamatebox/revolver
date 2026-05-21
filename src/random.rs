@@ -33,18 +33,21 @@ impl RandomState {
     /// Refetch all album_ids, shuffle them, truncate to `limit`, and replace the
     /// internal state. Returns the new length.
     ///
-    /// `limit` is the saved `browse.random_albums_limit` (SPEC §6.6). Capping at
+    /// `limit` is the saved `browse.random_albums_limit` (SPEC §6.6). `None`
+    /// means no cap — the entire shuffled population is kept. Capping at
     /// reshuffle time means `len()` / `page()` naturally reflect the user's cap
     /// without each caller having to clamp — and a re-roll picks a different
     /// random subset of `limit` albums out of the library each time.
-    pub fn reshuffle(&self, conn: &Connection, limit: usize) -> Result<usize> {
+    pub fn reshuffle(&self, conn: &Connection, limit: Option<usize>) -> Result<usize> {
         let mut stmt = conn.prepare_cached("SELECT id FROM albums")?;
         let mut ids: Vec<i64> = stmt
             .query_map([], |row| row.get(0))?
             .filter_map(|r| r.ok())
             .collect();
         ids.shuffle(&mut rand::thread_rng());
-        ids.truncate(limit);
+        if let Some(n) = limit {
+            ids.truncate(n);
+        }
         let len = ids.len();
         let mut guard = self.album_ids.lock().unwrap_or_else(|e| e.into_inner());
         *guard = ids;
@@ -116,7 +119,7 @@ mod tests {
         let conn = open();
         seed_n_albums(&conn, 5);
         let s = RandomState::new();
-        let n = s.reshuffle(&conn, 1000).unwrap();
+        let n = s.reshuffle(&conn, Some(1000)).unwrap();
         assert_eq!(n, 5);
         let mut got = s.page(0, 100);
         got.sort();
@@ -129,9 +132,9 @@ mod tests {
         let conn = open();
         seed_n_albums(&conn, 100);
         let s = RandomState::new();
-        s.reshuffle(&conn, 1000).unwrap();
+        s.reshuffle(&conn, Some(1000)).unwrap();
         let first = s.page(0, 100);
-        s.reshuffle(&conn, 1000).unwrap();
+        s.reshuffle(&conn, Some(1000)).unwrap();
         let second = s.page(0, 100);
         assert_ne!(first, second, "two shuffles should differ");
     }
@@ -141,7 +144,7 @@ mod tests {
         let conn = open();
         seed_n_albums(&conn, 3);
         let s = RandomState::new();
-        s.reshuffle(&conn, 1000).unwrap();
+        s.reshuffle(&conn, Some(1000)).unwrap();
         assert_eq!(s.page(100, 10), Vec::<i64>::new());
         // Partial out-of-range is fine (start+count > len).
         let partial = s.page(1, 100);
@@ -152,7 +155,7 @@ mod tests {
     fn ra5_empty_library_reshuffle_returns_zero() {
         let conn = open();
         let s = RandomState::new();
-        let n = s.reshuffle(&conn, 1000).unwrap();
+        let n = s.reshuffle(&conn, Some(1000)).unwrap();
         assert_eq!(n, 0);
         assert!(s.is_empty());
     }
@@ -165,7 +168,7 @@ mod tests {
         let conn = open();
         seed_n_albums(&conn, 10);
         let s = RandomState::new();
-        let n = s.reshuffle(&conn, 3).unwrap();
+        let n = s.reshuffle(&conn, Some(3)).unwrap();
         assert_eq!(n, 3);
         assert_eq!(s.len(), 3);
         let ids = s.page(0, 100);
@@ -182,7 +185,18 @@ mod tests {
         let conn = open();
         seed_n_albums(&conn, 4);
         let s = RandomState::new();
-        let n = s.reshuffle(&conn, 1000).unwrap();
+        let n = s.reshuffle(&conn, Some(1000)).unwrap();
         assert_eq!(n, 4);
+    }
+
+    #[test]
+    fn ra8_none_limit_keeps_full_population() {
+        // None = no cap; the full shuffled set should be retained.
+        let conn = open();
+        seed_n_albums(&conn, 7);
+        let s = RandomState::new();
+        let n = s.reshuffle(&conn, None).unwrap();
+        assert_eq!(n, 7);
+        assert_eq!(s.len(), 7);
     }
 }

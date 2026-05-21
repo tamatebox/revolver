@@ -7,7 +7,7 @@ Single binary, SQLite-backed, LAN-only.
 
 - **Library scanner** — FLAC / WAV / AIFF / ALAC / M4A (AAC) / MP3. High-resolution audio (up to 24-bit / 192 kHz) supported. Compilation detection, deletion detection, automatic quality classification, and ReplayGain capture (coverage surfaced via `/admin/stats`).
 - **UPnP/DLNA discovery** — Announced over SSDP, visible to standard UPnP control points.
-- **Browse** — Top-level facets (selection + order configurable via `browse.top_level`):
+- **Browse** — Top-level facets (selection + order configurable from the admin UI):
   - Album Artist / Artist / Album / Genre
   - Recently Added (flat album list, optionally capped by count + age in days)
   - Recently Played (counted by stream hits)
@@ -74,24 +74,24 @@ Edit `config.toml`. The most relevant fields:
 | `library.extensions` | File extensions to scan |
 | `scan.on_startup` | Run a library scan on startup |
 | `scan.parallel` | Rayon thread count for tag reading |
-| `browse.recently_added_limit` | Item cap for "Recently Added" |
-| `browse.recently_added_max_age_days` | Optional age cap (omit / `null` = show all by recency) |
-| `browse.random_albums_limit` | Cap for "Random Albums" |
-| `browse.top_level` | Selection + order of top-level facets (drop entries to hide — including Hi-Res / Lossy / Mixed Quality; unknown / empty entries are silently skipped) |
 
 See [`config.toml.example`](config.toml.example) for the full schema.
 
-The `[browse]` keys (and any future runtime-tier keys) can also be edited live via the admin UI (`/` → Settings) or the REST API:
+### Runtime browse settings
+
+Browse-side tuning (Recently Added count + age caps, Random Albums cap, top-level facet selection / order) lives in the admin UI (`/` → Settings) rather than `config.toml`. All keys default to "no cap / full canonical list", so a fresh install needs zero toml plumbing — open the Settings panel only when you want to dial something down.
+
+Same edits via the REST API:
 
 ```sh
 curl http://localhost:8200/admin/config                                # list with defaults / source / restart_required
 curl -X POST http://localhost:8200/admin/config \
      -H content-type:application/json \
-     -d '{"browse.recently_added_limit": 100}'                         # partial update
-curl -X DELETE http://localhost:8200/admin/config/browse.recently_added_limit   # reset to toml default
+     -d '{"browse.recently_added_limit": 100}'                         # partial update; `null` = no cap
+curl -X DELETE http://localhost:8200/admin/config/browse.recently_added_limit   # reset to default (no cap)
 ```
 
-`config.toml` is read once at startup as the initial defaults; user edits land in the SQLite-backed `config_overrides` table and persist across restarts.
+Edits land in the SQLite-backed `config_overrides` table and persist across restarts.
 
 ## Security
 

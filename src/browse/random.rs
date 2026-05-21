@@ -94,7 +94,7 @@ mod tests {
     fn rb1_random_follows_state_order() {
         let conn = seed_three_albums();
         let rs = RandomState::new();
-        rs.reshuffle(&conn, 1000).unwrap();
+        rs.reshuffle(&conn, Some(1000)).unwrap();
 
         let r = random_albums_children(&ctx_with(&conn, &rs), 0, 100).unwrap();
         assert_eq!(r.total_matches, 3);
@@ -114,7 +114,7 @@ mod tests {
     fn rb2_pagination_offset_and_count() {
         let conn = seed_three_albums();
         let rs = RandomState::new();
-        rs.reshuffle(&conn, 1000).unwrap();
+        rs.reshuffle(&conn, Some(1000)).unwrap();
 
         let r = random_albums_children(&ctx_with(&conn, &rs), 1, 1).unwrap();
         assert_eq!(r.total_matches, 3);
@@ -142,7 +142,7 @@ mod tests {
     fn rb4_parent_id_is_cat_random() {
         let conn = seed_three_albums();
         let rs = RandomState::new();
-        rs.reshuffle(&conn, 1000).unwrap();
+        rs.reshuffle(&conn, Some(1000)).unwrap();
         let r = random_albums_children(&ctx_with(&conn, &rs), 0, 100).unwrap();
         for c in &r.didl.containers {
             assert_eq!(c.parent_id, "cat:random");
@@ -154,7 +154,7 @@ mod tests {
         // Stale album_ids in state that no longer exist are skipped without panic.
         let conn = seed_three_albums();
         let rs = RandomState::new();
-        rs.reshuffle(&conn, 1000).unwrap();
+        rs.reshuffle(&conn, Some(1000)).unwrap();
         // Delete all tracks then delete_orphans on albums → only state retains stale ids.
         conn.execute("DELETE FROM tracks", []).unwrap();
         albums::delete_orphans(&conn).unwrap();
@@ -172,7 +172,7 @@ mod tests {
         // not page beyond it).
         let conn = seed_three_albums();
         let rs = RandomState::new();
-        rs.reshuffle(&conn, 2).unwrap();
+        rs.reshuffle(&conn, Some(2)).unwrap();
         let r = random_albums_children(&ctx_with(&conn, &rs), 0, 100).unwrap();
         assert_eq!(r.total_matches, 2);
         assert_eq!(r.didl.containers.len(), 2);

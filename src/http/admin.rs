@@ -121,14 +121,14 @@ pub async fn rescan(State(state): State<AppState>) -> Result<RescanAccepted, Htt
 
             // On structural changes, reorder Random as well (SPEC §6.6).
             if let Ok(conn) = state_for_post.db_pool.get() {
-                // Lock poison is rare; degrade to "no cap" (usize::MAX) rather than
+                // Lock poison is rare; degrade to `None` (= no cap) rather than
                 // skipping the reshuffle entirely. Worse than the configured cap,
                 // but preserves the user-visible reshuffle behavior.
                 let limit = state_for_post
                     .browse
                     .read()
                     .map(|s| s.random_albums_limit)
-                    .unwrap_or(usize::MAX);
+                    .unwrap_or(None);
                 match state_for_post.random_state.reshuffle(&conn, limit) {
                     Ok(n) => tracing::info!(albums = n, "post-rescan random reshuffle complete"),
                     Err(e) => tracing::error!(error = ?e, "post-rescan reshuffle failed"),

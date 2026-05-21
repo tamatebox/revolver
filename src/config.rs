@@ -55,12 +55,18 @@ pub struct Scan {
 
 #[derive(Debug, Deserialize)]
 pub struct Browse {
-    pub recently_added_limit: usize,
+    /// Cap the number of albums shown under `cat:recent`. `None` (the default)
+    /// means no cap — return every album that matches the optional age window.
+    #[serde(default)]
+    pub recently_added_limit: Option<usize>,
     /// Cap albums shown under `cat:recent` by age in days. `None` = no age
     /// cap (show everything by recency). SPEC §6.7.
     #[serde(default)]
     pub recently_added_max_age_days: Option<u32>,
-    pub random_albums_limit: usize,
+    /// Cap the shuffled `cat:random` array. `None` (the default) means no cap —
+    /// the full album population is shuffled and surfaced.
+    #[serde(default)]
+    pub random_albums_limit: Option<usize>,
 
     /// Selection and order of top-level facets surfaced at ObjectID "0"
     /// (SPEC §6.2, issue #8). Unknown / disabled entries are silently
@@ -150,8 +156,11 @@ mod tests {
         assert!(cfg.scan.on_startup);
         assert_eq!(cfg.scan.parallel, 8);
 
-        assert_eq!(cfg.browse.recently_added_limit, 50);
-        assert_eq!(cfg.browse.random_albums_limit, 100);
+        // After defaulting to None, the example file omits both limit keys so
+        // out-of-the-box behavior is "show everything"; admin UI is the only
+        // place to dial them down.
+        assert_eq!(cfg.browse.recently_added_limit, None);
+        assert_eq!(cfg.browse.random_albums_limit, None);
         assert!(!cfg.browse.quality_in_title);
     }
 
@@ -273,5 +282,29 @@ random_albums_limit = 20
             vec!["hires", "lossy", "mixed"]
         );
         assert!(!cfg.browse.quality_in_title_show_specs);
+    }
+
+    #[test]
+    fn c7_browse_limits_default_to_none_when_omitted() {
+        // Omitting both keys yields None (= unlimited). Admin UI is the only
+        // place to set a positive cap once the server is running.
+        let text = r#"
+[server]
+friendly_name = "Test"
+http_port = 9000
+
+[library]
+root = "/music"
+extensions = ["flac"]
+
+[scan]
+on_startup = false
+parallel = 1
+
+[browse]
+"#;
+        let cfg: Config = toml::from_str(text).expect("must parse with [browse] empty");
+        assert_eq!(cfg.browse.recently_added_limit, None);
+        assert_eq!(cfg.browse.random_albums_limit, None);
     }
 }

@@ -109,9 +109,10 @@ src/
 │   ├── tracks.rs         `trk:id` metadata + track list under `alb:id` +
 │   │                        DIDL Item builder
 │   ├── recent.rs         `cat:recent` — flat album list ordered by
-│   │                        `albums.last_added_at DESC`, capped by
-│   │                        `recently_added_limit` + optional
-│   │                        `recently_added_max_age_days` (SPEC §6.7, #16).
+│   │                        `albums.last_added_at DESC`, optionally capped by
+│   │                        `recently_added_limit` and/or
+│   │                        `recently_added_max_age_days` (both default `None`
+│   │                        = no cap; SPEC §6.7, #16).
 │   │                        (The pre-#16 sub-container cascade is gone.)
 │   ├── random.rs         `cat:random` — fetches albums from `random_state.page()`
 │   ├── quality.rs        `cat:hires` / `cat:lossy` / `cat:mixed` — filtered by `albums.quality`
@@ -472,8 +473,8 @@ In parallel, `ssdp::advertiser` multicasts `ssdp:alive` on startup, again every
         │
         ├─▶ Optional age cap: ctx.settings.recently_added_max_age_days
         │     adds `WHERE last_added_at >= now - days*86400`
-        ├─▶ Hard item cap: ctx.settings.recently_added_limit
-        │     (also caps SOAP RequestedCount even when the client asks for more)
+        ├─▶ Optional item cap: ctx.settings.recently_added_limit
+        │     (None = no cap; otherwise also caps SOAP RequestedCount)
         │
         ▼
    SELECT albums ORDER BY last_added_at DESC, id DESC LIMIT/OFFSET → album list

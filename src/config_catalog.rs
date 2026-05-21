@@ -159,10 +159,11 @@ pub const CATALOG: &[ConfigKey] = &[
     ConfigKey {
         key: "browse.recently_added_limit",
         label: "Recently Added — max items",
-        description: "Maximum number of albums shown in the Recently Added view.",
+        description: "Maximum number of albums shown in the Recently Added view. \
+                      Leave empty for no cap.",
         reload_tier: ReloadTier::Runtime,
         default: default_recently_added_limit,
-        validate: validate_positive_int,
+        validate: validate_nullable_positive_int,
         choices: None,
     },
     ConfigKey {
@@ -178,10 +179,11 @@ pub const CATALOG: &[ConfigKey] = &[
     ConfigKey {
         key: "browse.random_albums_limit",
         label: "Random Albums — list size",
-        description: "Number of albums included in the shuffled Random Albums list.",
+        description: "Number of albums included in the shuffled Random Albums list. \
+                      Leave empty for no cap.",
         reload_tier: ReloadTier::Runtime,
         default: default_random_albums_limit,
-        validate: validate_positive_int,
+        validate: validate_nullable_positive_int,
         choices: None,
     },
 ];
@@ -191,7 +193,10 @@ pub fn find(key: &str) -> Option<&'static ConfigKey> {
 }
 
 fn default_recently_added_limit(c: &Config) -> Value {
-    serde_json::json!(c.browse.recently_added_limit)
+    match c.browse.recently_added_limit {
+        Some(n) => serde_json::json!(n),
+        None => Value::Null,
+    }
 }
 
 fn default_recently_added_max_age_days(c: &Config) -> Value {
@@ -202,7 +207,10 @@ fn default_recently_added_max_age_days(c: &Config) -> Value {
 }
 
 fn default_random_albums_limit(c: &Config) -> Value {
-    serde_json::json!(c.browse.random_albums_limit)
+    match c.browse.random_albums_limit {
+        Some(n) => serde_json::json!(n),
+        None => Value::Null,
+    }
 }
 
 fn default_top_level(c: &Config) -> Value {
@@ -272,9 +280,14 @@ pub fn effective_value(defaults: &DefaultsMap, conn: &Connection, key: &str) -> 
 /// Called at startup and after a successful POST/DELETE so the in-memory
 /// snapshot stays in sync with the DB.
 pub fn build_browse_settings(defaults: &DefaultsMap, conn: &Connection) -> Result<BrowseSettings> {
-    let recently = effective_value(defaults, conn, "browse.recently_added_limit")?
-        .as_u64()
-        .unwrap_or(1) as usize;
+    let recently = {
+        let v = effective_value(defaults, conn, "browse.recently_added_limit")?;
+        if v.is_null() {
+            None
+        } else {
+            v.as_u64().map(|n| n as usize)
+        }
+    };
     let max_age_days = {
         let v = effective_value(defaults, conn, "browse.recently_added_max_age_days")?;
         if v.is_null() {
@@ -283,9 +296,14 @@ pub fn build_browse_settings(defaults: &DefaultsMap, conn: &Connection) -> Resul
             v.as_u64().map(|n| n.min(u32::MAX as u64) as u32)
         }
     };
-    let random = effective_value(defaults, conn, "browse.random_albums_limit")?
-        .as_u64()
-        .unwrap_or(1) as usize;
+    let random = {
+        let v = effective_value(defaults, conn, "browse.random_albums_limit")?;
+        if v.is_null() {
+            None
+        } else {
+            v.as_u64().map(|n| n as usize)
+        }
+    };
     let top_level = effective_value(defaults, conn, "browse.top_level")?
         .as_array()
         .map(|arr| {
@@ -378,8 +396,8 @@ random_albums_limit  = 100
         let defaults = precompute_defaults(&sample_config());
         config_overrides::set(&conn, "browse.recently_added_limit", "200", 0).unwrap();
         let s = build_browse_settings(&defaults, &conn).unwrap();
-        assert_eq!(s.recently_added_limit, 200);
-        assert_eq!(s.random_albums_limit, 100); // toml default
+        assert_eq!(s.recently_added_limit, Some(200));
+        assert_eq!(s.random_albums_limit, Some(100)); // toml default
     }
 
     #[test]
@@ -387,9 +405,51 @@ random_albums_limit  = 100
         let conn = open_in_memory();
         let defaults = precompute_defaults(&sample_config());
         let s = build_browse_settings(&defaults, &conn).unwrap();
-        assert_eq!(s.recently_added_limit, 50);
-        assert_eq!(s.random_albums_limit, 100);
+        assert_eq!(s.recently_added_limit, Some(50));
+        assert_eq!(s.random_albums_limit, Some(100));
         assert_eq!(s.top_level, crate::config::default_top_level());
+    }
+
+    #[test]
+    fn cc13_build_browse_settings_treats_missing_limit_as_none() {
+        // sample_config sets explicit limits; verify the unset path by stripping
+        // them out. With both keys absent from toml the build snapshot should
+        // surface None (= no cap), matching the new out-of-the-box default.
+        let cfg: Config = toml::from_str(
+            r#"
+[server]
+friendly_name = "X"
+http_port = 8200
+
+[library]
+root = "/x"
+extensions = ["flac"]
+
+[scan]
+on_startup = false
+parallel = 1
+
+[browse]
+"#,
+        )
+        .unwrap();
+        let conn = open_in_memory();
+        let defaults = precompute_defaults(&cfg);
+        let s = build_browse_settings(&defaults, &conn).unwrap();
+        assert_eq!(s.recently_added_limit, None);
+        assert_eq!(s.random_albums_limit, None);
+    }
+
+    #[test]
+    fn cc14_admin_can_clear_a_set_limit_with_null() {
+        // The admin UI sends `null` to mean "no cap"; that should round-trip
+        // through the catalog validator and land as None in the snapshot, even
+        // when the toml default is a positive integer.
+        let conn = open_in_memory();
+        let defaults = precompute_defaults(&sample_config());
+        config_overrides::set(&conn, "browse.recently_added_limit", "null", 0).unwrap();
+        let s = build_browse_settings(&defaults, &conn).unwrap();
+        assert_eq!(s.recently_added_limit, None);
     }
 
     #[test]

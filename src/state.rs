@@ -13,14 +13,16 @@ use crate::upnp::gena::{NotifyTasks, Subscriptions};
 /// from AppState to each view via `BrowseContext`.
 #[derive(Debug, Clone)]
 pub struct BrowseSettings {
-    /// Max items returned under `cat:recent` (SPEC §6.7).
-    /// Caps SOAP `RequestedCount` even when the client asks for more.
-    pub recently_added_limit: usize,
+    /// Max items returned under `cat:recent` (SPEC §6.7). `None` (the default)
+    /// means no cap — every album that matches the optional age window is
+    /// returned, paginated by the client's `RequestedCount`.
+    pub recently_added_limit: Option<usize>,
     /// Hide albums older than this many days from `cat:recent`. `None` (the
     /// default) means no age cap — show all albums by recency.
     pub recently_added_max_age_days: Option<u32>,
-    /// Max items per page for `cat:random` (SPEC §6.6). Same role.
-    pub random_albums_limit: usize,
+    /// Cap on the shuffled `cat:random` array (SPEC §6.6). `None` (the default)
+    /// means no cap — every album is shuffled in.
+    pub random_albums_limit: Option<usize>,
     /// Selection and order of root-container facets (#8, SPEC §6.2). Unknown
     /// or disabled entries are silently dropped by `root_children`. Hi-Res /
     /// Lossy / Mixed Quality are surfaced solely by this list — drop the
@@ -98,16 +100,17 @@ pub struct AppState {
 impl BrowseSettings {
     /// Build from values already loaded from `config.toml`. Structured to be
     /// config-independent so it can be reused from both production and tests.
+    /// `None` for either limit means "no cap" (return the full population).
     pub fn from_parts(
-        recently_added_limit: usize,
+        recently_added_limit: Option<usize>,
         recently_added_max_age_days: Option<u32>,
-        random_albums_limit: usize,
+        random_albums_limit: Option<usize>,
         top_level: Vec<String>,
     ) -> Self {
         Self {
-            recently_added_limit: recently_added_limit.max(1),
+            recently_added_limit: recently_added_limit.map(|n| n.max(1)),
             recently_added_max_age_days,
-            random_albums_limit: random_albums_limit.max(1),
+            random_albums_limit: random_albums_limit.map(|n| n.max(1)),
             top_level,
         }
     }
@@ -116,9 +119,9 @@ impl BrowseSettings {
 impl Default for BrowseSettings {
     fn default() -> Self {
         Self {
-            recently_added_limit: 1000,
+            recently_added_limit: None,
             recently_added_max_age_days: None,
-            random_albums_limit: 1000,
+            random_albums_limit: None,
             top_level: crate::config::default_top_level(),
         }
     }
