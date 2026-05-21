@@ -36,12 +36,16 @@ struct TaggedTrack<'a> {
 
 /// Full orchestrator per SPEC §4.1. Steps 1-12 + scan report persistence (§4.7).
 ///
+/// `scan_id` is provided by the caller so that the value returned to the
+/// HTTP client (`POST /admin/rescan` response) matches what `scan::run` logs
+/// and persists to `last_scan_report`. Generate with [`ScanReport::new_id`].
+///
 /// ops §P1: on mid-scan failure, overwrite `last_scan_report` with a minimal
 /// partial report so the failure trace is visible via `/admin/scan-report`.
 #[tracing::instrument(
     name = "scan",
     skip_all,
-    fields(scan_id = tracing::field::Empty, root = %root.display()),
+    fields(scan_id = %scan_id, root = %root.display()),
 )]
 pub fn run(
     conn: &mut Connection,
@@ -49,9 +53,8 @@ pub fn run(
     extensions: &[String],
     parallel: usize,
     progress: Arc<ScanProgress>,
+    scan_id: String,
 ) -> Result<ScanReport> {
-    let scan_id = ScanReport::new_id();
-    tracing::Span::current().record("scan_id", scan_id.as_str());
     let started = SystemTime::now();
     let started_secs = to_unix_secs(started);
 
@@ -616,6 +619,7 @@ mod tests {
             &extensions,
             1,
             Arc::new(ScanProgress::new()),
+            ScanReport::new_id(),
         )
         .unwrap();
 
@@ -698,6 +702,7 @@ mod tests {
             &extensions,
             1,
             Arc::new(ScanProgress::new()),
+            ScanReport::new_id(),
         )
         .unwrap();
         assert_eq!(report.stats.tracks_deleted, 1);
@@ -805,6 +810,7 @@ mod tests {
             &extensions,
             1,
             Arc::new(ScanProgress::new()),
+            ScanReport::new_id(),
         )
         .unwrap();
         assert!(report.error.is_none());
@@ -829,6 +835,7 @@ mod tests {
             &extensions,
             1,
             Arc::new(ScanProgress::new()),
+            ScanReport::new_id(),
         )
         .unwrap();
         assert_eq!(report.stats.tracks_inserted, 0);

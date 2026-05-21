@@ -70,10 +70,8 @@ pub async fn rescan(State(state): State<AppState>) -> Result<RescanAccepted, Htt
     let pool = state.db_pool.clone();
     let progress = state.scan_progress.clone();
     let state_for_post = state.clone();
-    // The response-side `scan_id` and the one `scan::run` generates internally
-    // are different values today; carrying both on nested spans is more
-    // confusing than useful, so the rescan span stays nameless.
-    let scan_span = tracing::info_span!("rescan");
+    let scan_id_for_run = scan_id.clone();
+    let scan_span = tracing::info_span!("rescan", scan_id = %scan_id);
 
     // Fire-and-forget: detach the scan + post-scan side effects so the HTTP
     // response can return as soon as the permit is held.
@@ -83,7 +81,14 @@ pub async fn rescan(State(state): State<AppState>) -> Result<RescanAccepted, Htt
                 move || -> crate::error::Result<crate::scan::report::ScanReport> {
                     let _permit = permit; // Hold the permit until the task completes.
                     let mut conn = pool.get()?;
-                    crate::scan::run(&mut conn, &library_root, &extensions, parallel, progress)
+                    crate::scan::run(
+                        &mut conn,
+                        &library_root,
+                        &extensions,
+                        parallel,
+                        progress,
+                        scan_id_for_run,
+                    )
                 },
             )
             .await;

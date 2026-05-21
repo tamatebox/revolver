@@ -5,6 +5,7 @@ use std::sync::{Arc, RwLock};
 use anyhow::{Context, Result};
 use clap::Parser;
 use tokio::sync::{broadcast, Semaphore};
+use tracing::Instrument;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
@@ -167,80 +168,89 @@ async fn main() -> Result<()> {
         let scan_pool = pool.clone();
         let progress = scan_progress.clone();
         let state_for_post = state.clone();
+        let scan_id = scan::report::ScanReport::new_id();
+        let startup_span = tracing::info_span!("startup_scan");
 
-        tokio::spawn(async move {
-            let scan_result =
-                tokio::task::spawn_blocking(move || -> error::Result<scan::report::ScanReport> {
-                    let _permit = permit;
-                    let mut conn = scan_pool.get()?;
-                    scan::run(&mut conn, &library_root, &extensions, parallel, progress)
-                })
-                .await;
-
-            let report = match scan_result {
-                Ok(Ok(r)) => r,
-                Ok(Err(e)) => {
-                    tracing::error!(error = ?e, "startup scan failed");
-                    return;
-                }
-                Err(e) => {
-                    tracing::error!(error = ?e, "startup scan join failed");
-                    return;
-                }
-            };
-            tracing::info!(
-                scan_id = %report.scan_id,
-                duration_ms = report.duration_ms,
-                "startup scan complete"
-            );
-
-            // If the startup scan produced a structural change (insert/delete/update),
-            // send propchange to already-SUBSCRIBED control points (SPEC §5.1).
-            // Right after startup there are typically 0 subscribers, so this is often a no-op.
-            if scan::should_bump_system_update_id(&report.stats) {
-                let conn = match state_for_post.db_pool.get() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::error!(error = ?e, "post-startup-scan: failed to get DB conn");
-                        return;
-                    }
-                };
-                let id = state_kv::get(&conn, "system_update_id")
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(|| "1".to_string());
-                drop(conn);
-                upnp::gena::broadcast_propchange(
-                    &state_for_post.notify_client,
-                    &state_for_post.subscriptions,
-                    &state_for_post.notify_tasks,
-                    upnp::gena::ServiceId::ContentDirectory,
-                    &[("SystemUpdateID", &id)],
+        tokio::spawn(
+            async move {
+                let scan_result = tokio::task::spawn_blocking(
+                    move || -> error::Result<scan::report::ScanReport> {
+                        let _permit = permit;
+                        let mut conn = scan_pool.get()?;
+                        scan::run(
+                            &mut conn,
+                            &library_root,
+                            &extensions,
+                            parallel,
+                            progress,
+                            scan_id,
+                        )
+                    },
                 )
                 .await;
 
-                // On structural change, also reshuffle Random (SPEC §6.6).
-                // Full reshuffle every time to avoid new releases being buried at the tail.
-                if let Ok(conn) = state_for_post.db_pool.get() {
-                    // Lock poison is rare; degrade to `None` (= no cap) rather than
-                    // skipping the reshuffle entirely (matches `/admin/rescan`).
-                    let limit = state_for_post
-                        .browse
-                        .read()
-                        .map(|s| s.random_albums_limit)
-                        .unwrap_or(None);
-                    match state_for_post.random_state.reshuffle(&conn, limit) {
-                        Ok(n) => tracing::info!(
-                            albums = n,
-                            "post-startup-scan random reshuffle complete"
-                        ),
+                let report = match scan_result {
+                    Ok(Ok(r)) => r,
+                    Ok(Err(e)) => {
+                        tracing::error!(error = ?e, "startup scan failed");
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::error!(error = ?e, "startup scan join failed");
+                        return;
+                    }
+                };
+                tracing::info!(duration_ms = report.duration_ms, "startup scan complete");
+
+                // If the startup scan produced a structural change (insert/delete/update),
+                // send propchange to already-SUBSCRIBED control points (SPEC §5.1).
+                // Right after startup there are typically 0 subscribers, so this is often a no-op.
+                if scan::should_bump_system_update_id(&report.stats) {
+                    let conn = match state_for_post.db_pool.get() {
+                        Ok(c) => c,
                         Err(e) => {
-                            tracing::error!(error = ?e, "post-startup-scan reshuffle failed")
+                            tracing::error!(error = ?e, "post-startup-scan: failed to get DB conn");
+                            return;
+                        }
+                    };
+                    let id = state_kv::get(&conn, "system_update_id")
+                        .ok()
+                        .flatten()
+                        .unwrap_or_else(|| "1".to_string());
+                    drop(conn);
+                    upnp::gena::broadcast_propchange(
+                        &state_for_post.notify_client,
+                        &state_for_post.subscriptions,
+                        &state_for_post.notify_tasks,
+                        upnp::gena::ServiceId::ContentDirectory,
+                        &[("SystemUpdateID", &id)],
+                    )
+                    .await;
+
+                    // On structural change, also reshuffle Random (SPEC §6.6).
+                    // Full reshuffle every time to avoid new releases being buried at the tail.
+                    if let Ok(conn) = state_for_post.db_pool.get() {
+                        // Lock poison is rare; degrade to `None` (= no cap) rather than
+                        // skipping the reshuffle entirely (matches `/admin/rescan`).
+                        let limit = state_for_post
+                            .browse
+                            .read()
+                            .map(|s| s.random_albums_limit)
+                            .unwrap_or(None);
+                        match state_for_post.random_state.reshuffle(&conn, limit) {
+                            Ok(n) => tracing::info!(
+                                albums = n,
+                                "post-startup-scan random reshuffle complete"
+                            ),
+                            Err(e) => {
+                                tracing::error!(error = ?e, "post-startup-scan reshuffle failed")
+                            }
                         }
                     }
                 }
             }
-        });
+            .instrument(startup_span),
+        );
     }
 
     // Start the SSDP listener / advertiser.
