@@ -192,11 +192,11 @@ async fn main() -> Result<()> {
                 let report = match scan_result {
                     Ok(Ok(r)) => r,
                     Ok(Err(e)) => {
-                        tracing::error!(error = ?e, "startup scan failed");
+                        tracing::error!(error = %e, "startup scan failed");
                         return;
                     }
                     Err(e) => {
-                        tracing::error!(error = ?e, "startup scan join failed");
+                        tracing::error!(error = %e, "startup scan join failed");
                         return;
                     }
                 };
@@ -209,7 +209,7 @@ async fn main() -> Result<()> {
                     let conn = match state_for_post.db_pool.get() {
                         Ok(c) => c,
                         Err(e) => {
-                            tracing::error!(error = ?e, "post-startup-scan: failed to get DB conn");
+                            tracing::error!(error = %e, "post-startup-scan: failed to get DB conn");
                             return;
                         }
                     };
@@ -243,7 +243,7 @@ async fn main() -> Result<()> {
                                 "post-startup-scan random reshuffle complete"
                             ),
                             Err(e) => {
-                                tracing::error!(error = ?e, "post-startup-scan reshuffle failed")
+                                tracing::error!(error = %e, "post-startup-scan reshuffle failed")
                             }
                         }
                     }

@@ -185,7 +185,7 @@ pub async fn stream(
     // but a TOCTOU rewrite after scan could repoint the target outside.
     // Canonicalize before opening and verify the library_root prefix (security §1).
     if !path_within_library(&track.path, &state.library_root).await {
-        tracing::warn!(
+        tracing::error!(
             path = %track.path.display(),
             "track path resolves outside library_root; refusing to serve"
         );
@@ -197,6 +197,11 @@ pub async fn stream(
 
     let range_header = headers.get("range").and_then(|v| v.to_str().ok());
     let parsed = parse_range(range_header, total);
+    tracing::info!(
+        range = range_header.unwrap_or("(none)"),
+        total_bytes = total,
+        "stream request received"
+    );
 
     // SPEC §6.8: treat requests with no Range or start=0 as "play start" and
     // update play_count / last_played_at. Linn pre-fetches (suffix / N-) are excluded.

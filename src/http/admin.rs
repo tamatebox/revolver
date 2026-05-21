@@ -96,11 +96,11 @@ pub async fn rescan(State(state): State<AppState>) -> Result<RescanAccepted, Htt
             let report = match scan_result {
                 Ok(Ok(r)) => r,
                 Ok(Err(e)) => {
-                    tracing::error!(error = ?e, "background scan failed");
+                    tracing::error!(error = %e, "background scan failed");
                     return;
                 }
                 Err(e) => {
-                    tracing::error!(error = ?e, "background scan join failed");
+                    tracing::error!(error = %e, "background scan join failed");
                     return;
                 }
             };
@@ -111,7 +111,7 @@ pub async fn rescan(State(state): State<AppState>) -> Result<RescanAccepted, Htt
                 let conn = match state_for_post.db_pool.get() {
                     Ok(c) => c,
                     Err(e) => {
-                        tracing::error!(error = ?e, "post-rescan: failed to get DB conn");
+                        tracing::error!(error = %e, "post-rescan: failed to get DB conn");
                         return;
                     }
                 };
@@ -143,7 +143,7 @@ pub async fn rescan(State(state): State<AppState>) -> Result<RescanAccepted, Htt
                         Ok(n) => {
                             tracing::info!(albums = n, "post-rescan random reshuffle complete")
                         }
-                        Err(e) => tracing::error!(error = ?e, "post-rescan reshuffle failed"),
+                        Err(e) => tracing::error!(error = %e, "post-rescan reshuffle failed"),
                     }
                 }
             }

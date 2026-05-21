@@ -82,6 +82,7 @@ fn handle_browse(
         count,
     )
     .entered();
+    tracing::info!("ContentDirectory Browse received");
 
     let conn = pool.get().map_err(|e| {
         tracing::error!(error = %e, "db pool acquisition failed");

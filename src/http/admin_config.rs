@@ -115,7 +115,7 @@ pub async fn post_config(
             .map(|s| s.random_albums_limit)
             .unwrap_or(None);
         if let Err(e) = state.random_state.reshuffle(&conn, new_limit) {
-            tracing::warn!(error = ?e, "auto-reshuffle after random_albums_limit change failed");
+            tracing::warn!(error = %e, "auto-reshuffle after random_albums_limit change failed");
         }
     }
 
