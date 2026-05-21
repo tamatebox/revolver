@@ -121,7 +121,15 @@ pub async fn rescan(State(state): State<AppState>) -> Result<RescanAccepted, Htt
 
             // On structural changes, reorder Random as well (SPEC §6.6).
             if let Ok(conn) = state_for_post.db_pool.get() {
-                match state_for_post.random_state.reshuffle(&conn) {
+                // Lock poison is rare; degrade to "no cap" (usize::MAX) rather than
+                // skipping the reshuffle entirely. Worse than the configured cap,
+                // but preserves the user-visible reshuffle behavior.
+                let limit = state_for_post
+                    .browse
+                    .read()
+                    .map(|s| s.random_albums_limit)
+                    .unwrap_or(usize::MAX);
+                match state_for_post.random_state.reshuffle(&conn, limit) {
                     Ok(n) => tracing::info!(albums = n, "post-rescan random reshuffle complete"),
                     Err(e) => tracing::error!(error = ?e, "post-rescan reshuffle failed"),
                 }
@@ -332,9 +340,14 @@ pub async fn reshuffle(
 ) -> Result<Json<ReshuffleResponse>, HttpError> {
     let pool = state.db_pool.clone();
     let rs = state.random_state.clone();
+    let limit = state
+        .browse
+        .read()
+        .map_err(|_| HttpError::Internal(anyhow::anyhow!("browse settings lock poisoned")))?
+        .random_albums_limit;
     let shuffled = tokio::task::spawn_blocking(move || -> crate::error::Result<usize> {
         let conn = pool.get()?;
-        rs.reshuffle(&conn)
+        rs.reshuffle(&conn, limit)
     })
     .await
     .map_err(|e| HttpError::Internal(anyhow::Error::new(e)))??;

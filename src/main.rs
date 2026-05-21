@@ -135,7 +135,12 @@ async fn main() -> Result<()> {
     // If scan runs, another reshuffle follows after it -- double shuffle is acceptable.
     {
         let conn = pool.get()?;
-        let n = state.random_state.reshuffle(&conn)?;
+        let limit = state
+            .browse
+            .read()
+            .map_err(|_| anyhow!("browse settings lock poisoned at startup reshuffle"))?
+            .random_albums_limit;
+        let n = state.random_state.reshuffle(&conn, limit)?;
         tracing::info!(albums = n, "initial random reshuffle complete");
     }
 
@@ -188,7 +193,12 @@ async fn main() -> Result<()> {
             // On structural change, also reshuffle Random (SPEC §6.6).
             // Full reshuffle every time to avoid new releases being buried at the tail.
             let conn = pool.get()?;
-            let n = state.random_state.reshuffle(&conn)?;
+            let limit = state
+                .browse
+                .read()
+                .map_err(|_| anyhow!("browse settings lock poisoned at post-scan reshuffle"))?
+                .random_albums_limit;
+            let n = state.random_state.reshuffle(&conn, limit)?;
             tracing::info!(albums = n, "post-startup-scan random reshuffle complete");
         }
     }

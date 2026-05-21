@@ -12,13 +12,14 @@ use super::{BrowseContext, ChildrenResult, DidlOutput};
 use crate::error::Result;
 
 /// Under `cat:random`: returns albums in `random_state.page(start, count)` order.
-/// `count` is capped at `config.browse.random_albums_limit`.
+/// The configured `browse.random_albums_limit` is applied at reshuffle time
+/// (see [`crate::random::RandomState::reshuffle`]); both `random_state.len()`
+/// and `page()` already reflect the cap, so no additional clamp is needed.
 pub fn random_albums_children(
     ctx: &BrowseContext,
     start: usize,
     count: usize,
 ) -> Result<ChildrenResult> {
-    let count = count.min(ctx.settings.random_albums_limit);
     let ids = ctx.random_state.page(start, count);
     let total = ctx.random_state.len();
 
@@ -93,7 +94,7 @@ mod tests {
     fn rb1_random_follows_state_order() {
         let conn = seed_three_albums();
         let rs = RandomState::new();
-        rs.reshuffle(&conn).unwrap();
+        rs.reshuffle(&conn, 1000).unwrap();
 
         let r = random_albums_children(&ctx_with(&conn, &rs), 0, 100).unwrap();
         assert_eq!(r.total_matches, 3);
@@ -113,7 +114,7 @@ mod tests {
     fn rb2_pagination_offset_and_count() {
         let conn = seed_three_albums();
         let rs = RandomState::new();
-        rs.reshuffle(&conn).unwrap();
+        rs.reshuffle(&conn, 1000).unwrap();
 
         let r = random_albums_children(&ctx_with(&conn, &rs), 1, 1).unwrap();
         assert_eq!(r.total_matches, 3);
@@ -141,7 +142,7 @@ mod tests {
     fn rb4_parent_id_is_cat_random() {
         let conn = seed_three_albums();
         let rs = RandomState::new();
-        rs.reshuffle(&conn).unwrap();
+        rs.reshuffle(&conn, 1000).unwrap();
         let r = random_albums_children(&ctx_with(&conn, &rs), 0, 100).unwrap();
         for c in &r.didl.containers {
             assert_eq!(c.parent_id, "cat:random");
@@ -153,7 +154,7 @@ mod tests {
         // Stale album_ids in state that no longer exist are skipped without panic.
         let conn = seed_three_albums();
         let rs = RandomState::new();
-        rs.reshuffle(&conn).unwrap();
+        rs.reshuffle(&conn, 1000).unwrap();
         // Delete all tracks then delete_orphans on albums → only state retains stale ids.
         conn.execute("DELETE FROM tracks", []).unwrap();
         albums::delete_orphans(&conn).unwrap();
@@ -162,5 +163,18 @@ mod tests {
         // total is state-based (3); containers is 0 since rows are missing in DB.
         assert_eq!(r.total_matches, 3);
         assert_eq!(r.didl.containers.len(), 0);
+    }
+
+    #[test]
+    fn rb6_total_matches_respects_reshuffle_limit() {
+        // 3 albums in DB, but reshuffle was called with limit=2 → cat:random
+        // surfaces only 2, and `total_matches` reflects the cap (so Linn does
+        // not page beyond it).
+        let conn = seed_three_albums();
+        let rs = RandomState::new();
+        rs.reshuffle(&conn, 2).unwrap();
+        let r = random_albums_children(&ctx_with(&conn, &rs), 0, 100).unwrap();
+        assert_eq!(r.total_matches, 2);
+        assert_eq!(r.didl.containers.len(), 2);
     }
 }

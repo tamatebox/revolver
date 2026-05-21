@@ -20,19 +20,31 @@ use crate::error::Result;
 const DAY_SECS: i64 = 86400;
 
 /// Children of `cat:recent`: a flat list of albums by recency.
+///
+/// Both `recently_added_limit` and `recently_added_max_age_days` are applied to
+/// `total_matches` and to the row slice — clients (Linn etc.) page strictly to
+/// `total_matches`, so capping only the page size would still surface every
+/// album in the window across N pages.
 pub fn recent_root_children(
     ctx: &BrowseContext,
     start: usize,
     count: usize,
 ) -> Result<ChildrenResult> {
-    let count = count.min(ctx.settings.recently_added_limit);
+    let limit = ctx.settings.recently_added_limit;
     let lower_bound: Option<i64> = ctx
         .settings
         .recently_added_max_age_days
         .map(|days| ctx.now_secs - (days as i64) * DAY_SECS);
 
-    let total = count_in_window(ctx, lower_bound)?;
-    let rows = list_in_window(ctx, lower_bound, start, count)?;
+    let actual = count_in_window(ctx, lower_bound)? as usize;
+    let total = actual.min(limit);
+    let remaining = total.saturating_sub(start);
+    let effective_count = count.min(remaining);
+    let rows = if effective_count == 0 {
+        Vec::new()
+    } else {
+        list_in_window(ctx, lower_bound, start, effective_count)?
+    };
 
     let parent_id = "cat:recent";
     let containers = rows
@@ -46,7 +58,7 @@ pub fn recent_root_children(
             items: vec![],
             nodes: vec![],
         },
-        total_matches: total as usize,
+        total_matches: total,
     })
 }
 
@@ -224,6 +236,52 @@ mod tests {
         let r = recent_root_children(&ctx_at(&conn, NOW_2024_01_01), 0, 100).unwrap();
         assert_eq!(r.total_matches, 0);
         assert!(r.didl.containers.is_empty());
+    }
+
+    fn ctx_with_limit(
+        conn: &Connection,
+        now_secs: i64,
+        limit: usize,
+    ) -> (BrowseContext<'_>, BrowseSettings) {
+        let settings = BrowseSettings {
+            recently_added_limit: limit,
+            ..BrowseSettings::default()
+        };
+        let rs = crate::random::RandomState::new();
+        let settings_clone = settings.clone();
+        let ctx = BrowseContext {
+            conn,
+            art_base_url: "http://x/art",
+            stream_base_url: "http://x/stream",
+            random_state: Box::leak(Box::new(rs)),
+            now_secs,
+            settings: Box::leak(Box::new(settings)),
+        };
+        (ctx, settings_clone)
+    }
+
+    #[test]
+    fn rr7_limit_caps_total_matches_and_rows() {
+        // 5 albums in window, limit=2 → total_matches clamps to 2 so Linn does
+        // not paginate past the cap; subsequent pages return empty.
+        let conn = seed_with_added_at(&[
+            ("A", NOW_2024_01_01 - 5),
+            ("B", NOW_2024_01_01 - 4),
+            ("C", NOW_2024_01_01 - 3),
+            ("D", NOW_2024_01_01 - 2),
+            ("E", NOW_2024_01_01 - 1),
+        ]);
+        let (ctx, _keep) = ctx_with_limit(&conn, NOW_2024_01_01, 2);
+        let page1 = recent_root_children(&ctx, 0, 100).unwrap();
+        assert_eq!(page1.total_matches, 2);
+        assert_eq!(page1.didl.containers.len(), 2);
+        // DESC by recency → E, D
+        assert_eq!(page1.didl.containers[0].title, "E");
+        assert_eq!(page1.didl.containers[1].title, "D");
+
+        let page2 = recent_root_children(&ctx, 2, 100).unwrap();
+        assert_eq!(page2.total_matches, 2);
+        assert!(page2.didl.containers.is_empty());
     }
 
     #[test]

@@ -89,13 +89,33 @@ pub async fn post_config(
 
     let conn = state.db_pool.get().map_err(ConfigUpdateError::pool)?;
     let now = unix_now();
+    let mut random_limit_touched = false;
     for (key, value, _tier) in &normalized {
         let raw = serde_json::to_string(value).map_err(ConfigUpdateError::serde)?;
         config_overrides::set(&conn, key, &raw, now).map_err(ConfigUpdateError::internal)?;
         tracing::info!(key = %key, value = %value, "config changed");
+        if *key == "browse.random_albums_limit" {
+            random_limit_touched = true;
+        }
     }
 
     refresh_browse_snapshot(&state, &conn)?;
+
+    // `cat:random` is backed by an in-memory shuffled vec sized to
+    // `random_albums_limit` at reshuffle time. Without re-shuffling here, the
+    // user's limit change would not take visible effect until the next
+    // scan / startup / explicit Reshuffle button press.
+    if random_limit_touched {
+        let new_limit = state
+            .browse
+            .read()
+            .map(|s| s.random_albums_limit)
+            .unwrap_or(usize::MAX);
+        if let Err(e) = state.random_state.reshuffle(&conn, new_limit) {
+            tracing::warn!(error = ?e, "auto-reshuffle after random_albums_limit change failed");
+        }
+    }
+
     Ok(StatusCode::NO_CONTENT)
 }
 
