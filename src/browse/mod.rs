@@ -74,7 +74,13 @@ pub struct BrowseContext<'a> {
 /// BrowseMetadata dispatch. Returns a single object.
 pub fn browse_metadata(ctx: &BrowseContext, id: &ObjectId) -> Result<DidlOutput> {
     use categories::{
-        genre_container, person_container, plain_cat, root_container, year_container,
+        genre_container, person_container, person_rep_album_id, plain_cat, root_container,
+        year_container,
+    };
+    // For person containers (aa/ar/cm/cn/pf), borrow the artist's
+    // representative album as the icon — matches enumeration behavior.
+    let person = |id: &ObjectId, parent: &str, name: &str| -> Container {
+        person_container(ctx, id, parent, name, person_rep_album_id(ctx, id, name))
     };
     match id {
         ObjectId::Root => Ok(single(root_container(ctx))),
@@ -93,13 +99,13 @@ pub fn browse_metadata(ctx: &BrowseContext, id: &ObjectId) -> Result<DidlOutput>
         ObjectId::CatPf => Ok(single(plain_cat("cat:pf", "0", "Performer"))),
         ObjectId::CatYr => Ok(single(plain_cat("cat:yr", "0", "Year"))),
         ObjectId::CatDec => Ok(single(plain_cat("cat:dec", "0", "Decade"))),
-        ObjectId::AlbumArtist(name) => Ok(single(person_container(id, "cat:aa", name))),
-        ObjectId::Artist(name) => Ok(single(person_container(id, "cat:ar", name))),
+        ObjectId::AlbumArtist(name) => Ok(single(person(id, "cat:aa", name))),
+        ObjectId::Artist(name) => Ok(single(person(id, "cat:ar", name))),
         ObjectId::ArtistTracks(name) => artist_tracks::artist_tracks_metadata(ctx, name),
         ObjectId::Genre(name) => Ok(single(genre_container(id, "cat:gn", name))),
-        ObjectId::Composer(name) => Ok(single(person_container(id, "cat:cm", name))),
-        ObjectId::Conductor(name) => Ok(single(person_container(id, "cat:cn", name))),
-        ObjectId::Performer(name) => Ok(single(person_container(id, "cat:pf", name))),
+        ObjectId::Composer(name) => Ok(single(person(id, "cat:cm", name))),
+        ObjectId::Conductor(name) => Ok(single(person(id, "cat:cn", name))),
+        ObjectId::Performer(name) => Ok(single(person(id, "cat:pf", name))),
         ObjectId::Year(y) => Ok(single(year_container(id, "cat:yr", &y.to_string()))),
         ObjectId::Decade(d) => Ok(single(year_container(id, "cat:dec", &format!("{d}s")))),
         ObjectId::UnknownGenre => Ok(single(genre_container(id, "cat:gn", "Unknown Genre"))),

@@ -73,7 +73,9 @@ fn build_root_facet(ctx: &BrowseContext, id: &str) -> Option<Container> {
     }
 }
 
-/// Under `cat:aa`: DISTINCT effective_album_artist.
+/// Under `cat:aa`: DISTINCT effective_album_artist. Each artist container
+/// carries `MIN(albums.id)` as its representative album, so the artist
+/// inherits the cover art of their first-scanned album for the icon.
 pub fn album_artists_children(
     ctx: &BrowseContext,
     start: usize,
@@ -85,16 +87,28 @@ pub fn album_artists_children(
         |r| r.get(0),
     )?;
     let mut stmt = ctx.conn.prepare_cached(
-        "SELECT DISTINCT effective_album_artist FROM albums
+        "SELECT effective_album_artist, MIN(id) AS rep_album_id
+         FROM albums
+         GROUP BY effective_album_artist
          ORDER BY effective_album_artist LIMIT ?1 OFFSET ?2",
     )?;
-    let names: Vec<String> = stmt
-        .query_map(params![count as i64, start as i64], |r| r.get(0))?
+    let rows: Vec<(String, i64)> = stmt
+        .query_map(params![count as i64, start as i64], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?
         .filter_map(|r| r.ok())
         .collect();
-    let containers = names
+    let containers = rows
         .into_iter()
-        .map(|name| person_container(&ObjectId::AlbumArtist(name.clone()), "cat:aa", &name))
+        .map(|(name, rep_id)| {
+            person_container(
+                ctx,
+                &ObjectId::AlbumArtist(name.clone()),
+                "cat:aa",
+                &name,
+                Some(rep_id),
+            )
+        })
         .collect();
     Ok(ChildrenResult {
         didl: DidlOutput {
@@ -106,7 +120,8 @@ pub fn album_artists_children(
     })
 }
 
-/// Under `cat:ar`: DISTINCT track artist.
+/// Under `cat:ar`: DISTINCT track artist. Representative album = the
+/// `MIN(tracks.album_id)` row where this artist appears (stable per artist).
 pub fn artists_children(ctx: &BrowseContext, start: usize, count: usize) -> Result<ChildrenResult> {
     let total: i64 = ctx.conn.query_row(
         "SELECT COUNT(DISTINCT artist) FROM tracks WHERE artist IS NOT NULL AND artist != ''",
@@ -114,17 +129,29 @@ pub fn artists_children(ctx: &BrowseContext, start: usize, count: usize) -> Resu
         |r| r.get(0),
     )?;
     let mut stmt = ctx.conn.prepare_cached(
-        "SELECT DISTINCT artist FROM tracks
+        "SELECT artist, MIN(album_id) AS rep_album_id
+         FROM tracks
          WHERE artist IS NOT NULL AND artist != ''
+         GROUP BY artist
          ORDER BY artist LIMIT ?1 OFFSET ?2",
     )?;
-    let names: Vec<String> = stmt
-        .query_map(params![count as i64, start as i64], |r| r.get(0))?
+    let rows: Vec<(String, i64)> = stmt
+        .query_map(params![count as i64, start as i64], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?
         .filter_map(|r| r.ok())
         .collect();
-    let containers = names
+    let containers = rows
         .into_iter()
-        .map(|name| person_container(&ObjectId::Artist(name.clone()), "cat:ar", &name))
+        .map(|(name, rep_id)| {
+            person_container(
+                ctx,
+                &ObjectId::Artist(name.clone()),
+                "cat:ar",
+                &name,
+                Some(rep_id),
+            )
+        })
         .collect();
     Ok(ChildrenResult {
         didl: DidlOutput {
@@ -166,14 +193,21 @@ pub fn albums_children(ctx: &BrowseContext, start: usize, count: usize) -> Resul
 }
 
 /// #9: Under `cat:cm` / `cat:cn` / `cat:pf` — DISTINCT composer / conductor /
-/// performer. Mirrors `artists_children`.
+/// performer. Each person container also carries `MIN(album_id)` so the
+/// artist icon inherits cover art from the first album they appear on.
 pub fn composers_children(
     ctx: &BrowseContext,
     start: usize,
     count: usize,
 ) -> Result<ChildrenResult> {
-    facet_children(ctx, "composer", "cat:cm", start, count, |name| {
-        person_container(&ObjectId::Composer(name.clone()), "cat:cm", &name)
+    facet_children(ctx, "composer", "cat:cm", start, count, |name, rep_id| {
+        person_container(
+            ctx,
+            &ObjectId::Composer(name.clone()),
+            "cat:cm",
+            &name,
+            Some(rep_id),
+        )
     })
 }
 
@@ -182,8 +216,14 @@ pub fn conductors_children(
     start: usize,
     count: usize,
 ) -> Result<ChildrenResult> {
-    facet_children(ctx, "conductor", "cat:cn", start, count, |name| {
-        person_container(&ObjectId::Conductor(name.clone()), "cat:cn", &name)
+    facet_children(ctx, "conductor", "cat:cn", start, count, |name, rep_id| {
+        person_container(
+            ctx,
+            &ObjectId::Conductor(name.clone()),
+            "cat:cn",
+            &name,
+            Some(rep_id),
+        )
     })
 }
 
@@ -192,21 +232,30 @@ pub fn performers_children(
     start: usize,
     count: usize,
 ) -> Result<ChildrenResult> {
-    facet_children(ctx, "performer", "cat:pf", start, count, |name| {
-        person_container(&ObjectId::Performer(name.clone()), "cat:pf", &name)
+    facet_children(ctx, "performer", "cat:pf", start, count, |name, rep_id| {
+        person_container(
+            ctx,
+            &ObjectId::Performer(name.clone()),
+            "cat:pf",
+            &name,
+            Some(rep_id),
+        )
     })
 }
 
 /// Generic "DISTINCT $column FROM tracks WHERE $column IS NOT NULL" enumerator
 /// for the #9 classical facets. `column` must be a literal identifier (caller
 /// passes a hard-coded string; never user input — guards against SQL injection).
+///
+/// The callback receives `(name, rep_album_id)` so the caller can stamp a
+/// stable per-person album icon onto each emitted container.
 fn facet_children(
     ctx: &BrowseContext,
     column: &'static str,
     _parent_id: &'static str,
     start: usize,
     count: usize,
-    make: impl Fn(String) -> Container,
+    make: impl Fn(String, i64) -> Container,
 ) -> Result<ChildrenResult> {
     let total: i64 = ctx.conn.query_row(
         &format!(
@@ -218,16 +267,20 @@ fn facet_children(
         |r| r.get(0),
     )?;
     let mut stmt = ctx.conn.prepare_cached(&format!(
-        "SELECT DISTINCT {col} FROM tracks
+        "SELECT {col}, MIN(album_id) AS rep_album_id
+         FROM tracks
          WHERE {col} IS NOT NULL AND {col} != ''
+         GROUP BY {col}
          ORDER BY {col} COLLATE NOCASE LIMIT ?1 OFFSET ?2",
         col = column
     ))?;
-    let names: Vec<String> = stmt
-        .query_map(params![count as i64, start as i64], |r| r.get(0))?
+    let rows: Vec<(String, i64)> = stmt
+        .query_map(params![count as i64, start as i64], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?
         .filter_map(|r| r.ok())
         .collect();
-    let containers: Vec<Container> = names.into_iter().map(make).collect();
+    let containers: Vec<Container> = rows.into_iter().map(|(n, rid)| make(n, rid)).collect();
     Ok(ChildrenResult {
         didl: DidlOutput {
             containers,
@@ -489,7 +542,33 @@ fn cat_with_icon(
     c
 }
 
-pub(crate) fn person_container(id: &ObjectId, parent: &str, name: &str) -> Container {
+/// Look up the representative album id for a person container (used for the
+/// icon in BrowseMetadata, where the enumeration query that would surface it
+/// for free is not in play). `aa:` resolves against `albums.effective_album_artist`;
+/// the other four (`ar:` / `cm:` / `cn:` / `pf:`) resolve against the
+/// matching `tracks.{column}`. Returns `None` for non-person ObjectIDs.
+pub(crate) fn person_rep_album_id(ctx: &BrowseContext, id: &ObjectId, name: &str) -> Option<i64> {
+    let sql = match id {
+        ObjectId::AlbumArtist(_) => "SELECT MIN(id) FROM albums WHERE effective_album_artist = ?1",
+        ObjectId::Artist(_) => "SELECT MIN(album_id) FROM tracks WHERE artist = ?1",
+        ObjectId::Composer(_) => "SELECT MIN(album_id) FROM tracks WHERE composer = ?1",
+        ObjectId::Conductor(_) => "SELECT MIN(album_id) FROM tracks WHERE conductor = ?1",
+        ObjectId::Performer(_) => "SELECT MIN(album_id) FROM tracks WHERE performer = ?1",
+        _ => return None,
+    };
+    ctx.conn
+        .query_row(sql, params![name], |r| r.get::<_, Option<i64>>(0))
+        .ok()
+        .flatten()
+}
+
+pub(crate) fn person_container(
+    ctx: &BrowseContext,
+    id: &ObjectId,
+    parent: &str,
+    name: &str,
+    rep_album_id: Option<i64>,
+) -> Container {
     Container {
         id: object_id::encode(id),
         parent_id: parent.to_string(),
@@ -497,7 +576,11 @@ pub(crate) fn person_container(id: &ObjectId, parent: &str, name: &str) -> Conta
         upnp_class: "object.container.person.musicArtist",
         child_count: None,
         artist: None,
-        album_art_uri: None,
+        // #24 follow-up: borrow the artist's first-scanned album as a
+        // stand-in icon for the artist container. Stable per artist (MIN
+        // over a monotonic id), so the thumbnail does not jitter across
+        // Browse calls. URL shape matches `albums::album_container`.
+        album_art_uri: rep_album_id.map(|aid| format!("{}/{}", ctx.art_base_url, aid)),
     }
 }
 
@@ -547,6 +630,132 @@ mod tests {
             now_secs: 0,
             settings,
         }
+    }
+
+    #[test]
+    fn ar1_album_artists_children_borrows_min_album_id_per_artist_for_icon() {
+        // Two album artists; Artist A has two albums (older + newer). The
+        // representative album for the icon must be `MIN(id)` over each
+        // artist's albums — i.e. the oldest-scanned album per artist.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::schema::migrate(&conn).unwrap();
+        let aid_a_first = crate::db::albums::upsert(
+            &conn,
+            &crate::db::albums::AlbumKey {
+                effective_album_artist: "Artist A",
+                album: "First by A",
+                compilation: false,
+            },
+            Some("Artist A"),
+            0,
+        )
+        .unwrap();
+        let aid_b_only = crate::db::albums::upsert(
+            &conn,
+            &crate::db::albums::AlbumKey {
+                effective_album_artist: "Artist B",
+                album: "Only by B",
+                compilation: false,
+            },
+            Some("Artist B"),
+            0,
+        )
+        .unwrap();
+        let _aid_a_second = crate::db::albums::upsert(
+            &conn,
+            &crate::db::albums::AlbumKey {
+                effective_album_artist: "Artist A",
+                album: "Second by A",
+                compilation: false,
+            },
+            Some("Artist A"),
+            0,
+        )
+        .unwrap();
+
+        let rs = RandomState::new();
+        let s = BrowseSettings::default();
+        let r = album_artists_children(&ctx_with(&conn, &rs, &s), 0, 100).unwrap();
+
+        assert_eq!(r.total_matches, 2);
+        let by_title = |t: &str| {
+            r.didl
+                .containers
+                .iter()
+                .find(|c| c.title == t)
+                .unwrap_or_else(|| panic!("expected container titled {t}"))
+        };
+        let aa = by_title("Artist A");
+        let bb = by_title("Artist B");
+        assert_eq!(
+            aa.album_art_uri.as_deref(),
+            Some(format!("http://x/art/{aid_a_first}")).as_deref(),
+            "Artist A icon should reference the first-scanned album"
+        );
+        assert_eq!(
+            bb.album_art_uri.as_deref(),
+            Some(format!("http://x/art/{aid_b_only}")).as_deref(),
+        );
+    }
+
+    #[test]
+    fn ar2_person_rep_album_id_resolves_each_variant() {
+        // One track that carries every classical role and is linked to an
+        // album under "Some Conductor". All 5 ObjectId person variants should
+        // resolve to that single album.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::schema::migrate(&conn).unwrap();
+        let aid = crate::db::albums::upsert(
+            &conn,
+            &crate::db::albums::AlbumKey {
+                effective_album_artist: "Album Artist",
+                album: "Symphony",
+                compilation: false,
+            },
+            Some("Album Artist"),
+            0,
+        )
+        .unwrap();
+        let mut row = crate::browse::test_helpers::default_track_row(aid, "/m/sym.flac", 0);
+        row.artist = Some("Track Artist");
+        row.composer = Some("Some Composer");
+        row.conductor = Some("Some Conductor");
+        row.performer = Some("Orchestra X");
+        crate::db::tracks::upsert(&conn, &row).unwrap();
+
+        let rs = RandomState::new();
+        let s = BrowseSettings::default();
+        let ctx = ctx_with(&conn, &rs, &s);
+        for (variant, label) in [
+            (ObjectId::AlbumArtist("Album Artist".into()), "AlbumArtist"),
+            (ObjectId::Artist("Track Artist".into()), "Artist"),
+            (ObjectId::Composer("Some Composer".into()), "Composer"),
+            (ObjectId::Conductor("Some Conductor".into()), "Conductor"),
+            (ObjectId::Performer("Orchestra X".into()), "Performer"),
+        ] {
+            let name = match &variant {
+                ObjectId::AlbumArtist(n)
+                | ObjectId::Artist(n)
+                | ObjectId::Composer(n)
+                | ObjectId::Conductor(n)
+                | ObjectId::Performer(n) => n.clone(),
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                person_rep_album_id(&ctx, &variant, &name),
+                Some(aid),
+                "{label} should resolve to the seeded album"
+            );
+        }
+        assert_eq!(
+            person_rep_album_id(&ctx, &ObjectId::Artist("Nobody".into()), "Nobody"),
+            None,
+            "unknown person resolves to None"
+        );
+        // Non-person ObjectIds return None unconditionally.
+        assert_eq!(person_rep_album_id(&ctx, &ObjectId::CatAa, "ignored"), None);
     }
 
     #[test]
