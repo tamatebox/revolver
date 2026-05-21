@@ -7,6 +7,29 @@ use walkdir::WalkDir;
 pub struct WalkResult {
     pub audio_files: Vec<PathBuf>,
     pub skipped: Vec<SkippedFile>,
+    /// Companion files (`Folder.jpg`, `*.log`, `*.cue`, etc.) seen alongside
+    /// audio. Counted but not enumerated individually in `skipped`, so the
+    /// scan report stays signal-heavy (#19, SPEC §4.7).
+    pub companion_files_seen: usize,
+}
+
+/// Non-audio files that routinely sit next to music in album directories.
+/// Drained into a counter instead of `skipped` so actionable skips (e.g.
+/// a stray `.flac.tmp` or `.mp33`) are visible (#19, SPEC §4.7).
+///
+/// Groups: album art / rip sidecars / playlists / checksums.
+#[rustfmt::skip]
+const COMPANION_EXTENSIONS: &[&str] = &[
+    "jpg", "jpeg", "png", "gif", "bmp", "webp",
+    "log", "cue", "nfo", "txt", "pdf",
+    "m3u", "m3u8", "pls",
+    "md5", "sfv", "accurip",
+];
+
+fn is_companion_extension(ext: &str) -> bool {
+    COMPANION_EXTENSIONS
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case(ext))
 }
 
 #[derive(Debug)]
@@ -71,9 +94,8 @@ pub fn walk(root: &Path, extensions: &[String]) -> WalkResult {
         }
         let path = entry.path();
 
-        let ext_match = path
-            .extension()
-            .and_then(|e| e.to_str())
+        let ext_opt = path.extension().and_then(|e| e.to_str());
+        let ext_match = ext_opt
             .map(|e| {
                 extensions
                     .iter()
@@ -82,10 +104,16 @@ pub fn walk(root: &Path, extensions: &[String]) -> WalkResult {
             .unwrap_or(false);
 
         if !ext_match {
-            result.skipped.push(SkippedFile {
-                path: path.to_path_buf(),
-                reason: SkipReason::UnsupportedExtension,
-            });
+            // Companion files (album art / logs / playlists) collapse into a counter
+            // so the `skipped` list highlights actionable issues only (#19).
+            if ext_opt.map(is_companion_extension).unwrap_or(false) {
+                result.companion_files_seen += 1;
+            } else {
+                result.skipped.push(SkippedFile {
+                    path: path.to_path_buf(),
+                    reason: SkipReason::UnsupportedExtension,
+                });
+            }
             continue;
         }
 
@@ -155,10 +183,12 @@ mod tests {
     }
 
     #[test]
-    fn w3_flac_and_txt() {
+    fn w3_flac_and_unrelated_binary() {
+        // Non-companion non-audio extension goes to `skipped` so an admin can
+        // notice things like a stray `.exe` or a mistyped `.mp33` (#19).
         let tmp = TempDir::new().unwrap();
         touch(tmp.path(), "song.flac", b"audio");
-        touch(tmp.path(), "notes.txt", b"text");
+        touch(tmp.path(), "stray.exe", b"bin");
         let r = walk(tmp.path(), &extensions());
         assert_eq!(r.audio_files.len(), 1);
         assert_eq!(r.skipped.len(), 1);
@@ -166,6 +196,30 @@ mod tests {
             r.skipped[0].reason,
             SkipReason::UnsupportedExtension
         ));
+        assert_eq!(r.companion_files_seen, 0);
+    }
+
+    #[test]
+    fn w12_companion_files_counted_not_skipped() {
+        // Folder.jpg / rip.log / cuesheet / playlist / checksum live alongside
+        // music in 99% of album dirs. They must NOT bloat the `skipped` list (#19).
+        let tmp = TempDir::new().unwrap();
+        touch(tmp.path(), "Album/01.flac", b"audio");
+        touch(tmp.path(), "Album/Folder.jpg", b"image");
+        touch(tmp.path(), "Album/rip.log", b"log");
+        touch(tmp.path(), "Album/Album.cue", b"cue");
+        touch(tmp.path(), "Album/playlist.m3u", b"playlist");
+        touch(tmp.path(), "Album/checksum.md5", b"sum");
+        // Mixed-case extension must still match (case-insensitive whitelist).
+        touch(tmp.path(), "Album/COVER.JPG", b"image");
+        let r = walk(tmp.path(), &extensions());
+        assert_eq!(r.audio_files.len(), 1);
+        assert!(
+            r.skipped.is_empty(),
+            "companion files must not appear in skipped, got: {:?}",
+            r.skipped
+        );
+        assert_eq!(r.companion_files_seen, 6);
     }
 
     #[test]

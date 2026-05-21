@@ -32,6 +32,9 @@ pub struct ScanStats {
     pub albums_inserted: usize,
     pub albums_deleted: usize,
     pub tag_read_failed: usize,
+    /// Album art / sidecars (`Folder.jpg`, `*.log`, `*.cue`, …) seen during
+    /// walk. Counted only — paths are not enumerated in `skipped` (#19).
+    pub companion_files_seen: usize,
 }
 
 /// Tag issue (playable but needs correction).
@@ -89,6 +92,7 @@ mod tests {
             "albums_inserted",
             "albums_deleted",
             "tag_read_failed",
+            "companion_files_seen",
         ] {
             assert!(json.contains(key), "missing key in JSON: {}", key);
         }
@@ -143,8 +147,11 @@ mod tests {
         assert!(json.contains(r#""path":"/x/y.flac""#));
         assert!(json.contains(r#""issue":"missing_album""#));
 
+        // `.txt` is now a companion file and would be aggregated into the
+        // counter, so use a non-companion extension to keep the
+        // SkippedEntry serialization test on the `unsupported_extension` path (#19).
         let s = SkippedEntry {
-            path: "/x/notes.txt".into(),
+            path: "/x/stray.exe".into(),
             reason: "unsupported_extension",
         };
         let json = serde_json::to_string(&s).unwrap();

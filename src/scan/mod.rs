@@ -119,7 +119,9 @@ fn run_inner(
 ) -> Result<ScanReport> {
     // ── 1-2. walker ─────────────────────────────────────────────────────
     let walk_result = walker::walk(root, extensions);
-    let files_enumerated = walk_result.audio_files.len() + walk_result.skipped.len();
+    let companion_files_seen = walk_result.companion_files_seen;
+    let files_enumerated =
+        walk_result.audio_files.len() + walk_result.skipped.len() + companion_files_seen;
 
     // security §6: normalize scan report paths to be library_root-relative.
     // Exposing absolute host paths in JSON would leak filesystem layout.
@@ -341,6 +343,7 @@ fn run_inner(
         albums_inserted,
         albums_deleted,
         tag_read_failed,
+        companion_files_seen,
     };
 
     // SPEC §5.1: bump system_update_id by 1 on structural change.
@@ -362,6 +365,7 @@ fn run_inner(
         albums_inserted = stats.albums_inserted,
         albums_deleted = stats.albums_deleted,
         tag_read_failed = stats.tag_read_failed,
+        companion_files_seen = stats.companion_files_seen,
         issues = issues.len(),
         skipped = skipped.len(),
         "scan complete"
@@ -623,16 +627,7 @@ mod tests {
     }
 
     fn empty_stats() -> ScanStats {
-        ScanStats {
-            files_enumerated: 0,
-            tracks_inserted: 0,
-            tracks_updated: 0,
-            tracks_unchanged: 0,
-            tracks_deleted: 0,
-            albums_inserted: 0,
-            albums_deleted: 0,
-            tag_read_failed: 0,
-        }
+        ScanStats::default()
     }
 
     #[test]

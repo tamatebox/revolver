@@ -391,15 +391,17 @@ which is stored as JSON in `server_state` and exposed via
     "tracks_unchanged": 50214,    // skipped by mtime
     "tracks_deleted": 5,          // file disappeared
     "albums_inserted": 1,
-    "albums_deleted": 0
+    "albums_deleted": 0,
+    "tag_read_failed": 0,
+    "companion_files_seen": 482   // Folder.jpg / *.log / *.cue / playlists / checksums (aggregated, not enumerated)
   },
   "issues": [                     // playable but needs attention
     {"path": "...", "issue": "missing_album_artist"},
     {"path": "...", "issue": "missing_album"},
     {"path": "...", "issue": "no_duration"}
   ],
-  "skipped": [                    // not scanned
-    {"path": "...", "reason": "unsupported_extension"},
+  "skipped": [                    // actionable skips only — non-music files with NON-companion extensions
+    {"path": "...", "reason": "unsupported_extension"},  // e.g. stray `.flac.tmp`, mistyped `.mp33`
     {"path": "...", "reason": "zero_size"},
     {"path": "...", "reason": "tag_read_failed", "error": "..."}
   ]
@@ -412,14 +414,29 @@ historical archive).
 **Relationship to logs**: `tracing` emits detailed info during the scan; the
 report is the post-hoc summary.
 
+**Companion files**: `Folder.jpg`, `*.log`, `*.cue`, `*.nfo`, `*.txt`,
+`*.pdf`, `*.m3u` / `*.m3u8` / `*.pls`, image variants
+(`jpeg` / `png` / `gif` / `bmp` / `webp`), and checksum sidecars
+(`md5` / `sfv` / `accurip`) are aggregated into `stats.companion_files_seen`
+rather than enumerated in `skipped`. The whitelist is hard-coded
+([src/scan/walker.rs](src/scan/walker.rs) `COMPANION_EXTENSIONS`) and not
+configurable — runtime-config'ing it is YAGNI until a real use case appears.
+`skipped` therefore lists only **actionable** non-audio files: stray
+temporary files, mistyped extensions, or genuinely unsupported audio
+formats that should be added to `library.extensions`.
+
 ### 4.8 Filesystem Rules
 
 - Hidden files (paths starting with `.`) are **skipped** (`.DS_Store`,
   `.git/`, etc.).
 - **Symlinks are followed** (so organizational symlinks that aggregate music
   from elsewhere work).
-- Files with extensions outside the supported list (`.txt`, `.pdf`, …) are
-  recorded in the report with a reason.
+- Files with extensions outside the supported list are split into two
+  buckets: **companion files** common in album directories
+  (album art / logs / cuesheets / playlists / checksums — see §4.7) are
+  aggregated into `stats.companion_files_seen`, while **non-companion**
+  non-audio files (stray `.exe`, `.flac.tmp`, …) appear individually in
+  `skipped` so they remain actionable.
 - **Character encoding**: paths and tags are assumed UTF-8. Shift-JIS or
   Latin-1 tags are accepted as-is from `lofty` without conversion. If
   display is garbled, fix the tags upstream.
