@@ -70,7 +70,10 @@ pub async fn rescan(State(state): State<AppState>) -> Result<RescanAccepted, Htt
     let pool = state.db_pool.clone();
     let progress = state.scan_progress.clone();
     let state_for_post = state.clone();
-    let scan_span = tracing::info_span!("rescan", scan_id = %scan_id);
+    // The response-side `scan_id` and the one `scan::run` generates internally
+    // are different values today; carrying both on nested spans is more
+    // confusing than useful, so the rescan span stays nameless.
+    let scan_span = tracing::info_span!("rescan");
 
     // Fire-and-forget: detach the scan + post-scan side effects so the HTTP
     // response can return as soon as the permit is held.

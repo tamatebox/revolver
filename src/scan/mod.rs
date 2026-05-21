@@ -38,6 +38,11 @@ struct TaggedTrack<'a> {
 ///
 /// ops §P1: on mid-scan failure, overwrite `last_scan_report` with a minimal
 /// partial report so the failure trace is visible via `/admin/scan-report`.
+#[tracing::instrument(
+    name = "scan",
+    skip_all,
+    fields(scan_id = tracing::field::Empty, root = %root.display()),
+)]
 pub fn run(
     conn: &mut Connection,
     root: &Path,
@@ -46,10 +51,11 @@ pub fn run(
     progress: Arc<ScanProgress>,
 ) -> Result<ScanReport> {
     let scan_id = ScanReport::new_id();
+    tracing::Span::current().record("scan_id", scan_id.as_str());
     let started = SystemTime::now();
     let started_secs = to_unix_secs(started);
 
-    info!(scan_id = %scan_id, root = %root.display(), "scan started");
+    info!("scan started");
     progress.begin_scan();
 
     let result = run_inner(
@@ -95,7 +101,7 @@ pub(crate) fn write_failure_report(
         skipped: vec![],
         error: Some(error.to_string()),
     };
-    tracing::warn!(scan_id = %scan_id, error = %error, "scan failed; writing partial report");
+    tracing::warn!(error = %error, "scan failed; writing partial report");
     match serde_json::to_string(&failed) {
         Ok(json) => {
             if let Err(e2) = state_kv::set(conn, "last_scan_report", &json) {
@@ -355,7 +361,6 @@ fn run_inner(
     }
 
     info!(
-        scan_id = %scan_id,
         duration_ms,
         files_enumerated = stats.files_enumerated,
         tracks_inserted = stats.tracks_inserted,
