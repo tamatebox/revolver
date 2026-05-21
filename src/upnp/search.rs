@@ -1,6 +1,6 @@
 //! Parser for UPnP ContentDirectory:1 `SearchCriteria` (SPEC §5.4).
 //!
-//! Supports the subset Linn / Kazoo actually send (observed via #4):
+//! Supports the subset Linn actually sends (observed via #4):
 //!
 //! - `upnp:class derivedfrom "X"` — class filter (Album / Artist / Track).
 //! - `dc:title contains "X"`, `upnp:album contains "X"`, `upnp:artist contains "X"`,

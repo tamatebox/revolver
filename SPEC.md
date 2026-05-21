@@ -543,7 +543,7 @@ SOAP faults follow UPnP convention: every fault is returned as **HTTP 500 + `<s:
 ### 5.4 Search Implementation
 
 The Search action is implemented to match the subset of the UPnP search
-grammar that real control points (notably Linn / Kazoo, observed via #4)
+grammar that real control points (notably Linn, observed via #4)
 actually send. The parser produces a tagged predicate tree; the dispatcher
 routes queries by the `upnp:class derivedfrom` filter and runs a `LIKE
 '%X%'` search against NFKD-folded shadow columns (`*_norm`, #6).
@@ -1336,7 +1336,7 @@ Extensions that fail any of these stay out until they pass.
 
 - **Linn `X_MAP_*` family** (`X_MAP_BROWSE_ENTRY`, etc.) — PoC pending
   (#25). Lives in device.xml, would hint top-level facet hierarchy to
-  Linn Kazoo.
+  Linn-aware control points.
 - **Sonos `r:` namespace** (`r:gain`, `r:peakValue`, etc.) — PoC pending.
   Lives in DIDL-Lite. ReplayGain values are already stored on
   `tracks.rg_*` (#11) and `/admin/stats.tracks_with_replaygain` exposes
