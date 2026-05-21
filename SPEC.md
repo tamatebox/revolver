@@ -781,7 +781,7 @@ Album containers use `object.container.album.musicAlbum`.
   <upnp:album>...</upnp:album>
   <upnp:genre>...</upnp:genre>
   <upnp:originalTrackNumber>...</upnp:originalTrackNumber>
-  <upnp:originalDiscNumber>...</upnp:originalDiscNumber>  <!-- omitted when unset or 0 -->
+  <upnp:originalDiscNumber>...</upnp:originalDiscNumber>  <!-- multi-disc albums only -->
   <upnp:albumArtURI>http://.../art/{album_id}</upnp:albumArtURI>
   <res
     protocolInfo="http-get:*:audio/flac:*"
@@ -1237,8 +1237,11 @@ quality_in_title_show_specs = true           # include numeric specs like "Hi-Re
 16. Recently Added time-range submenu (§6.7).
 17. Recently Played view via stream-hit counting (`cat:played`, §6.8).
 18. Web admin UI (§8.4).
-19. Multi-disc surfaced in DIDL: `<upnp:originalDiscNumber>` emitted on tracks
-    when `disc_num > 0` (§7.2, §14).
+19. Multi-disc albums surface disc info via both `<upnp:originalDiscNumber>`
+    **and** a `"N. "` title prefix (e.g. `"1. Hey Jude"` / `"2. Exciton"`).
+    Gated on `MAX(disc_num) > 1` per album, so single-disc albums are
+    unaffected. Title prefix is the Linn-side fallback because Linn parses
+    but ignores `<upnp:originalDiscNumber>` in UI rendering (§7.2, §14).
 
 ### Future Work
 
@@ -1297,12 +1300,15 @@ quality_in_title_show_specs = true           # include numeric specs like "Hi-Re
 - **Multi-disc albums**: identical `(effective_album_artist, album,
   compilation)` with different `disc_num` is automatically aggregated as a
   single album (the schema handles it). `ORDER BY disc_num, track_num`
-  produces the right order, and `<upnp:originalDiscNumber>` surfaces the disc
-  number to control points (omitted when `disc_num` is `NULL` or `0` so
-  single-disc albums don't broadcast a meaningless "Disc 1"). When tags carry
-  album names like `"Album [Disc 1]"`, the result is two separate albums; fix
-  this in tags. Automatic disc merging based on parsed-out suffixes is **not
-  implemented** (intentional — the parsing rules are too lossy).
+  produces the right order. When `MAX(disc_num) > 1` for that album, two
+  things happen: (1) `<upnp:originalDiscNumber>` is emitted, and (2)
+  `dc:title` is prefixed with `"N. "` (e.g. `"1. Hey Jude"`). The title
+  prefix is the Linn fallback — Linn parses `originalDiscNumber` but does not
+  visually separate discs from it, leaving disc-2 tracks looking like
+  duplicates of disc-1 tracks. Single-disc albums skip both. When tags carry
+  album names like `"Album [Disc 1]"`, the result is two separate albums;
+  fix this in tags. Automatic disc merging based on parsed-out suffixes is
+  **not implemented** (intentional — the parsing rules are too lossy).
 - **DB cleanup on file deletion**: paths missing from the filesystem during a
   scan are deleted from `tracks`. File moves or renames also look like
   delete-then-insert, which resets `added_at` to "now" for those tracks.

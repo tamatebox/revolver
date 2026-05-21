@@ -240,7 +240,8 @@ fn search_track_items(
     let sql = format!(
         "SELECT t.id, t.album_id, t.title, t.artist, t.genre, t.track_num, t.disc_num,
                 t.duration_ms, t.sample_rate, t.bit_depth, t.channels,
-                t.bitrate, t.mime_type, t.file_size, a.album
+                t.bitrate, t.mime_type, t.file_size, a.album,
+                (SELECT IFNULL(MAX(disc_num), 0) FROM tracks WHERE album_id = t.album_id) > 1
          FROM tracks t JOIN albums a ON t.album_id = a.id
          WHERE {}
          ORDER BY t.title COLLATE NOCASE
@@ -269,6 +270,7 @@ fn search_track_items(
                     mime_type: r.get(12)?,
                     file_size: r.get(13)?,
                     album: r.get(14)?,
+                    multi_disc: r.get::<_, i64>(15)? != 0,
                 },
             ))
         })?
