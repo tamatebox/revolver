@@ -12,9 +12,10 @@ use crate::state::AppState;
 /// Embedded in the binary, so no separate static file server is needed.
 const ADMIN_UI_HTML: &str = include_str!("admin_ui.html");
 
-/// `GET /admin/ui` and `GET /admin/` — return the admin UI as a single HTML page
-/// (SPEC §8.4). Polls `/admin/stats` to display state and triggers scan / reshuffle
-/// via buttons.
+/// `GET /` — return the admin UI as a single HTML page (SPEC §8.1, §8.4).
+/// Polls `/admin/stats` to display state and triggers scan / reshuffle via buttons.
+///
+/// `GET /admin/ui` and `GET /admin/` redirect here (308) for backward compatibility.
 pub async fn ui() -> Response {
     (
         StatusCode::OK,
@@ -725,7 +726,7 @@ mod tests {
         assert!(uptime > 0, "with started_at=1, uptime should be large");
     }
 
-    // ── /admin/ui (SPEC §8.4) ──────────────────────────────────────────
+    // ── admin UI (SPEC §8.1, §8.4) ─────────────────────────────────────
 
     async fn fetch_admin_ui(app: axum::Router, uri: &str) -> axum::http::Response<Body> {
         app.oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
@@ -737,7 +738,7 @@ mod tests {
     async fn ui1_admin_ui_returns_html() {
         let (state, _db, _lib) = test_state_with_library();
         let app = crate::http::router(state);
-        let resp = fetch_admin_ui(app, "/admin/ui").await;
+        let resp = fetch_admin_ui(app, "/").await;
         assert_eq!(resp.status(), StatusCode::OK);
         assert!(
             resp.headers()
@@ -755,14 +756,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ui2_admin_trailing_slash_also_returns_ui() {
-        // The UI is returned even with a trailing slash (a courtesy for browser address completion).
+    async fn ui2_old_admin_paths_redirect_to_root() {
+        // `/admin/ui` and `/admin/` are kept as 308 redirects to `/` (backward compat).
         let (state, _db, _lib) = test_state_with_library();
         let app = crate::http::router(state);
-        let resp = fetch_admin_ui(app, "/admin/").await;
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_string(resp).await;
-        assert!(body.contains("<title>revolver admin</title>"));
+        for uri in ["/admin/ui", "/admin/"] {
+            let resp = fetch_admin_ui(app.clone(), uri).await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::PERMANENT_REDIRECT,
+                "{} should 308 to /",
+                uri
+            );
+            assert_eq!(
+                resp.headers().get("location").unwrap().to_str().unwrap(),
+                "/",
+                "{} should redirect to /",
+                uri
+            );
+        }
     }
 
     #[tokio::test]
@@ -771,7 +783,7 @@ mod tests {
         // (early detection of dead links).
         let (state, _db, _lib) = test_state_with_library();
         let app = crate::http::router(state);
-        let resp = fetch_admin_ui(app, "/admin/ui").await;
+        let resp = fetch_admin_ui(app, "/").await;
         let body = body_string(resp).await;
         for path in [
             "/admin/stats",
