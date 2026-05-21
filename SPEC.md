@@ -519,8 +519,8 @@ versions):
 
 | Class filter | Table queried | Returned objects |
 |---|---|---|
-| `Album`  | `albums` — `dc:title`/`upnp:album` map to `albums.album`, `upnp:artist` to `effective_album_artist` | `alb:{id}` containers |
-| `Artist` | `albums` — `dc:title`/`upnp:artist` map to `effective_album_artist` (distinct) | `aa:{base64}` containers |
+| `Album`  | `albums` — `dc:title` fans out across `album_norm`, `effective_album_artist_norm`, and `EXISTS (tracks.artist_norm)` so typing an artist name into the Album field also surfaces compilations they appear on (#21). `upnp:album` stays album-name-only (regression guard against widening explicit album-name predicates); `upnp:artist` maps to `effective_album_artist_norm`. Single-leaf `dc:title contains` is ordered by a 4-bucket CASE (exact album → album_artist contains → album contains → track-artist EXISTS only); other shapes fall back to `album_norm` ascending. | `alb:{id}` containers |
+| `Artist` | UNION of `DISTINCT effective_album_artist FROM albums` and `DISTINCT artist FROM tracks` (#22), deduped via `GROUP BY name` + `MAX(is_aa)` so a name appearing in both columns collapses to one row with album_artist winning. Hits with `is_aa = 1` emit `aa:{X}`; track-only hits emit `ar:{X}` (whose Browse handler — `albums_by_artist_children` — already existed). `cat:aa` / `cat:ar` Browse listings stay role-separated and are unchanged. | `aa:{base64}` or `ar:{base64}` containers |
 | `Track`  | `tracks JOIN albums` — `title`/`album`/`artist`/`genre` columns | track items |
 | `Any`    | Treated as Track | track items |
 
@@ -598,6 +598,7 @@ Scheme:
 | `cat:pf` | Performer category (#9) | Fixed |
 | `aa:{base64(name)}` | A specific Album Artist | Stable as long as the displayed name doesn't change |
 | `ar:{base64(name)}` | A specific Artist | Same |
+| `at:{base64(name)}` | "All tracks by X" flat virtual container (#23) — prepended to `aa:{X}` / `ar:{X}` Browse when X has ≥ 1 track-level row | Same as `aa:` (URL-safe base64 of the name) |
 | `gn:{base64(name)}` | A specific Genre | Same |
 | `cm:{base64(name)}` | A specific Composer (#9) | Same |
 | `cn:{base64(name)}` | A specific Conductor (#9) | Same |
@@ -715,6 +716,7 @@ Rules:
 | `cat:mixed` | "Mixed Quality" | `object.container` |
 | `aa:...` | Album Artist name | `object.container.person.musicArtist` |
 | `ar:...` | Artist name | `object.container.person.musicArtist` |
+| `at:...` | "All tracks (N)" shortcut (#23) | `object.container` |
 | `gn:...` | Genre name | `object.container.genre.musicGenre` |
 | `cm:...` | Composer name (#9) | `object.container.person.musicArtist` |
 | `cn:...` | Conductor name (#9) | `object.container.person.musicArtist` |
@@ -735,9 +737,10 @@ Track items use `object.item.audioItem.musicTrack`.
 | View (ObjectID) | Query |
 |---|---|
 | children of `cat:aa` | `SELECT DISTINCT effective_album_artist FROM albums ORDER BY effective_album_artist LIMIT ? OFFSET ?` |
-| children of `aa:{name}` | `SELECT id, album FROM albums WHERE effective_album_artist = ? ORDER BY album LIMIT ? OFFSET ?` |
+| children of `aa:{name}` | `SELECT id, album FROM albums WHERE effective_album_artist = ? ORDER BY album LIMIT ? OFFSET ?`. #23: if `COUNT(*) FROM tracks WHERE artist_norm = for_search(name)` is > 0, a synthetic `at:{name}` "All tracks (N)" container is prepended and `total_matches` reflects the extra slot; pagination consumes it on page 0 and slides the album offset back by 1 on later pages. |
 | children of `cat:ar` | `SELECT DISTINCT artist FROM tracks WHERE artist IS NOT NULL AND artist != '' ORDER BY artist LIMIT ? OFFSET ?` |
-| children of `ar:{name}` | Albums on which this artist performs. `SELECT DISTINCT a.id, a.album FROM albums a JOIN tracks t ON t.album_id = a.id WHERE t.artist = ? ORDER BY a.album LIMIT ? OFFSET ?` |
+| children of `ar:{name}` | Albums on which this artist performs. `SELECT a.id, a.album FROM albums a WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id AND t.artist = ?) ORDER BY a.album LIMIT ? OFFSET ?`. Same `at:{name}` shortcut prepend as `aa:{name}` (#23). |
+| children of `at:{name}` (#23) | `SELECT t.id, …, a.album FROM tracks t JOIN albums a ON t.album_id = a.id WHERE t.artist_norm = for_search(name) ORDER BY a.album_norm, t.disc_num, t.track_num LIMIT ? OFFSET ?` — flat track listing across every album where X is a track-level artist. Match is **exact** on the normalized column (`= ?`), not LIKE. |
 | children of `cat:al` | `SELECT id, album, effective_album_artist FROM albums ORDER BY album LIMIT ? OFFSET ?` |
 | children of `cat:gn` | `SELECT DISTINCT genre FROM tracks WHERE genre IS NOT NULL AND genre != '' ORDER BY genre LIMIT ? OFFSET ?` — with an Unknown Genre container appended at virtual index `sorted_total` when ≥ 1 album has every track with NULL / empty `genre` |
 | children of `gn:{name}` | `SELECT DISTINCT a.id, a.album FROM albums a JOIN tracks t ON t.album_id = a.id WHERE t.genre = ? ORDER BY a.album LIMIT ? OFFSET ?` |

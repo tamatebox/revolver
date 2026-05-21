@@ -91,8 +91,9 @@ src/
 │   ├── object_id.rs          ObjectID parse / encode (URL-safe base64, no padding).
 │   │                            Variants: Root / Cat{Aa,Ar,Al,Gn,Recent,Played,Random,
 │   │                            Hires,Lossy,Mixed,Cm,Cn,Pf,Yr,Dec} +
-│   │                            AlbumArtist / Artist / Genre / Composer / Conductor /
-│   │                            Performer / Year(i32) / Decade(i32) /
+│   │                            AlbumArtist / Artist / ArtistTracks (#23 — `at:`) /
+│   │                            Genre / Composer / Conductor / Performer /
+│   │                            Year(i32) / Decade(i32) /
 │   │                            Unknown{Genre,Year,Decade} (sentinels for the
 │   │                            empty-tag buckets — encoded as `gn:` / `yr:0` /
 │   │                            `dec:0`, collision-free vs. base64 / positive
@@ -121,6 +122,14 @@ src/
 │   │                        `albums_by_unknown_{genre,year,decade}_children`
 │   │                        for the Unknown buckets (`WHERE NOT EXISTS` against
 │   │                        the same source column).
+│   │                        #23: `albums_by_aa_children` / `albums_by_artist_children`
+│   │                        prepend an `at:{X}` "All tracks (N)" synthetic
+│   │                        container via the shared `shortcut_split` helper.
+│   ├── artist_tracks.rs  `at:{name}` flat shortcut (#23). `children` returns
+│   │                        every track with `artist_norm = for_search(name)`
+│   │                        ordered by album / disc / track; `metadata`
+│   │                        resolves `parent_id` to `aa:{X}` if X exists as an
+│   │                        album_artist, else `ar:{X}`. Match is exact, not LIKE.
 │   ├── tracks.rs         `trk:id` metadata + track list under `alb:id` +
 │   │                        DIDL Item builder
 │   ├── recent.rs         `cat:recent` — flat album list ordered by
@@ -531,14 +540,21 @@ views default to flat — avoid sub-container cascades (see CLAUDE.md).
         │  dispatched by ClassFilter:
         │
         ├── Album  ──▶ search_albums
-        │     WHERE on album_norm / effective_album_artist_norm (#6)
+        │     Single-leaf `dc:title contains "X"` → search_albums_ranked:
+        │     3-way OR WHERE (album_norm / effective_album_artist_norm /
+        │     EXISTS tracks.artist_norm) plus a 4-bucket CASE in ORDER BY
+        │     (exact album → album_artist contains → partial album →
+        │     track-only artist) (#21). Other shapes fall back to the
+        │     generic predicate_to_sql_albums path with `album_norm` order.
         │
         ├── Artist ──▶ search_artists
         │     If `[@role="Composer|Conductor|Performer"]` is present (#9):
         │     ──▶ search_classical_facet — DISTINCT t.{column} where
         │         the `*_norm` shadow column matches; returns cm:/cn:/pf:
         │         containers
-        │     Otherwise: DISTINCT effective_album_artist with norm column
+        │     Otherwise: UNION of effective_album_artist + tracks.artist (#22)
+        │         with GROUP BY name + MAX(is_aa); aa: / ar: containers are
+        │         emitted depending on which column the name came from
         │
         └── Track / Any ──▶ search_track_items
               tracks JOIN albums, 4-field OR (title / album / artist / genre)
