@@ -128,13 +128,24 @@ fn search_albums(
 }
 
 fn predicate_to_sql_albums(p: &Predicate) -> WhereClause {
-    // Map title→album_norm, album→album_norm, artist→effective_album_artist_norm.
-    // Genre is a track-level attribute on revolver's schema and doesn't appear
-    // on albums; if it shows up here we drop that branch.
+    // Map title→(album_norm OR effective_album_artist_norm OR EXISTS tracks.artist_norm);
+    // album→album_norm; artist→effective_album_artist_norm. Genre is a
+    // track-level attribute on revolver's schema and doesn't appear on
+    // albums; if it shows up here we drop that branch.
+    //
+    // The Title fan-out (#21) is what makes "type an artist name into the
+    // Album field" find both the artist's own albums and compilations where
+    // they appear only at the track level. `upnp:album` stays album-only so
+    // explicit album-name predicates from non-Linn clients aren't widened.
     walk(p, &|prop, _role| match prop {
-        Property::Title | Property::Album => Some("album_norm"),
-        Property::Artist => Some("effective_album_artist_norm"),
-        Property::Genre => None,
+        Property::Title => &[
+            "album_norm LIKE ?",
+            "effective_album_artist_norm LIKE ?",
+            "EXISTS (SELECT 1 FROM tracks WHERE album_id = albums.id AND artist_norm LIKE ?)",
+        ],
+        Property::Album => &["album_norm LIKE ?"],
+        Property::Artist => &["effective_album_artist_norm LIKE ?"],
+        Property::Genre => &[],
     })
 }
 
@@ -160,8 +171,8 @@ fn search_artists(
     // the artist name. Map title→effective_album_artist_norm. We also accept
     // upnp:artist for the same reason.
     let where_clause = walk(predicate, &|prop, _role| match prop {
-        Property::Title | Property::Artist => Some("effective_album_artist_norm"),
-        _ => None,
+        Property::Title | Property::Artist => &["effective_album_artist_norm LIKE ?"],
+        _ => &[],
     });
     if where_clause.is_empty() {
         return Ok(empty());
@@ -236,15 +247,15 @@ fn search_track_items(
     // #9: if `upnp:artist[@role="Composer"]` (etc.) appears, route that leaf
     // to the matching tracks column rather than `t.artist`.
     let where_clause = walk(predicate, &|prop, role| match prop {
-        Property::Title => Some("t.title_norm"),
-        Property::Album => Some("a.album_norm"),
+        Property::Title => &["t.title_norm LIKE ?"],
+        Property::Album => &["a.album_norm LIKE ?"],
         Property::Artist => match role {
-            Some("Composer") => Some("t.composer_norm"),
-            Some("Conductor") => Some("t.conductor_norm"),
-            Some("Performer") => Some("t.performer_norm"),
-            _ => Some("t.artist_norm"),
+            Some("Composer") => &["t.composer_norm LIKE ?"],
+            Some("Conductor") => &["t.conductor_norm LIKE ?"],
+            Some("Performer") => &["t.performer_norm LIKE ?"],
+            _ => &["t.artist_norm LIKE ?"],
         },
-        Property::Genre => Some("t.genre_norm"),
+        Property::Genre => &["t.genre_norm LIKE ?"],
     });
     if where_clause.is_empty() {
         return Ok(empty());
@@ -365,12 +376,17 @@ fn search_classical_facet(
     start: usize,
     count: usize,
 ) -> Result<SearchResult> {
-    let norm_col = match_column_norm(column);
+    let (norm_col, template): (&'static str, &'static [&'static str]) = match column {
+        "composer" => ("composer_norm", &["composer_norm LIKE ?"]),
+        "conductor" => ("conductor_norm", &["conductor_norm LIKE ?"]),
+        "performer" => ("performer_norm", &["performer_norm LIKE ?"]),
+        _ => ("composer_norm", &["composer_norm LIKE ?"]),
+    };
     // Accept dc:title and upnp:artist in the predicate; map both to the facet's
     // norm column. role is already known (`first_role`) and not re-checked per leaf.
     let where_clause = walk(predicate, &|prop, _role| match prop {
-        Property::Title | Property::Artist => Some(norm_col),
-        _ => None,
+        Property::Title | Property::Artist => template,
+        _ => &[],
     });
     if where_clause.is_empty() {
         return Ok(empty());
@@ -435,17 +451,6 @@ fn search_classical_facet(
     })
 }
 
-/// Map the raw facet column to its `*_norm` shadow column (#6). Caller
-/// passes a literal so the match is exhaustive.
-fn match_column_norm(col: &'static str) -> &'static str {
-    match col {
-        "composer" => "composer_norm",
-        "conductor" => "conductor_norm",
-        "performer" => "performer_norm",
-        _ => "composer_norm",
-    }
-}
-
 // ── Predicate → SQL ───────────────────────────────────────────────────────
 
 #[derive(Default)]
@@ -461,42 +466,58 @@ impl WhereClause {
 }
 
 /// Walk a predicate tree, mapping each `Property` (with its optional `role`
-/// attribute) to a SQL column via `column_for`. Returns the WHERE-clause SQL
-/// plus its positional params. `column_for` returning `None` drops that leaf
-/// (e.g. genre on the albums table); the surrounding AND/OR is simplified
-/// accordingly.
+/// attribute) to one or more SQL match-expression templates via `expr_for`.
+/// Each template carries exactly one `?` placeholder that the leaf substitutes
+/// with the actual positional index. Returns the WHERE-clause SQL plus its
+/// params. An empty slice from `expr_for` drops that leaf (e.g. genre on the
+/// albums table); the surrounding AND/OR is simplified accordingly. Multiple
+/// templates from one leaf are OR-combined and share a single placeholder
+/// (and therefore one param). This is how the Album-class `dc:title` predicate
+/// fans out across `album_norm`, `effective_album_artist_norm`, and the
+/// `EXISTS (tracks.artist_norm)` subquery.
 ///
 /// The `role` argument lets Track-class search route
 /// `upnp:artist[@role="Composer"]` to the `t.composer` column instead of
 /// `t.artist` (#9).
 fn walk(
     p: &Predicate,
-    column_for: &dyn Fn(&Property, Option<&str>) -> Option<&'static str>,
+    expr_for: &dyn Fn(&Property, Option<&str>) -> &'static [&'static str],
 ) -> WhereClause {
     let mut w = WhereClause::default();
-    walk_inner(p, column_for, &mut w);
+    walk_inner(p, expr_for, &mut w);
     w
 }
 
 fn walk_inner(
     p: &Predicate,
-    column_for: &dyn Fn(&Property, Option<&str>) -> Option<&'static str>,
+    expr_for: &dyn Fn(&Property, Option<&str>) -> &'static [&'static str],
     out: &mut WhereClause,
 ) {
     match p {
         Predicate::Contains { prop, value, role } => {
-            if let Some(col) = column_for(prop, role.as_deref()) {
-                // #6: the column is a `*_norm` shadow, so the search value
-                // must run through the same pipeline. NOCASE is unnecessary
-                // because `for_search` already lowercases.
-                let normalized = crate::normalize::for_search(value);
-                let placeholder = out.params.len() + 1;
-                out.sql.push_str(&format!("{} LIKE ?{}", col, placeholder));
-                out.params.push(SqlValue::from(format!("%{}%", normalized)));
+            let templates = expr_for(prop, role.as_deref());
+            if templates.is_empty() {
+                return;
+            }
+            // #6: the column is a `*_norm` shadow, so the search value must
+            // run through the same pipeline. NOCASE is unnecessary because
+            // `for_search` already lowercases.
+            let normalized = crate::normalize::for_search(value);
+            let placeholder = out.params.len() + 1;
+            out.params.push(SqlValue::from(format!("%{}%", normalized)));
+            let placeholder_str = format!("?{}", placeholder);
+            let parts: Vec<String> = templates
+                .iter()
+                .map(|t| t.replacen('?', &placeholder_str, 1))
+                .collect();
+            if parts.len() == 1 {
+                out.sql.push_str(&parts[0]);
+            } else {
+                out.sql.push_str(&format!("({})", parts.join(" OR ")));
             }
         }
-        Predicate::And(children) => emit_join(children, "AND", column_for, out),
-        Predicate::Or(children) => emit_join(children, "OR", column_for, out),
+        Predicate::And(children) => emit_join(children, "AND", expr_for, out),
+        Predicate::Or(children) => emit_join(children, "OR", expr_for, out),
         Predicate::DerivedFrom(_) | Predicate::True => {
             // Should have been stripped / collapsed before reaching here.
         }
@@ -506,7 +527,7 @@ fn walk_inner(
 fn emit_join(
     children: &[Predicate],
     sep: &str,
-    column_for: &dyn Fn(&Property, Option<&str>) -> Option<&'static str>,
+    expr_for: &dyn Fn(&Property, Option<&str>) -> &'static [&'static str],
     out: &mut WhereClause,
 ) {
     let mut parts: Vec<(String, Vec<SqlValue>)> = Vec::with_capacity(children.len());
@@ -515,7 +536,7 @@ fn emit_join(
         // Re-base placeholders during a second pass after we know the final
         // ordering; for now collect each child's raw fragments and renumber
         // below.
-        walk_with_local_indices(c, column_for, &mut sub);
+        walk_with_local_indices(c, expr_for, &mut sub);
         if !sub.is_empty() {
             parts.push((sub.sql, sub.params));
         }
@@ -542,10 +563,10 @@ fn emit_join(
 /// `emit_join` so we can renumber later.
 fn walk_with_local_indices(
     p: &Predicate,
-    column_for: &dyn Fn(&Property, Option<&str>) -> Option<&'static str>,
+    expr_for: &dyn Fn(&Property, Option<&str>) -> &'static [&'static str],
     out: &mut WhereClause,
 ) {
-    walk_inner(p, column_for, out);
+    walk_inner(p, expr_for, out);
 }
 
 /// Shift every `?N` placeholder in `sql` by `base`. Naive but adequate —
@@ -719,6 +740,50 @@ mod tests {
             r.didl.containers[0].upnp_class,
             "object.container.album.musicAlbum"
         );
+    }
+
+    // #21: Album-class `dc:title` also fans out to `effective_album_artist`
+    // and (via EXISTS) `tracks.artist`. Typing an artist name into Linn's
+    // Album field should reveal both the artist's own albums and any
+    // compilation where they appear only at the track level.
+
+    #[test]
+    fn st1b_album_class_title_matches_album_artist() {
+        // "Beatles" appears nowhere in album titles but is the album_artist
+        // of Abbey Road. With the #21 fan-out the album shows up.
+        let conn = seed_db();
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.album" and dc:title contains "Beatles""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.containers[0].title, "Abbey Road");
+    }
+
+    #[test]
+    fn st1c_album_class_title_matches_track_level_artist_via_exists() {
+        // "Some Singer" is a track-level artist on the VA compilation but is
+        // not an album_artist anywhere. The EXISTS branch surfaces the comp.
+        let conn = seed_db();
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.album" and dc:title contains "Some Singer""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.containers[0].title, "Hits");
+    }
+
+    #[test]
+    fn st1d_album_class_upnp_album_stays_album_name_only() {
+        // Regression guard: `upnp:album` is *album name* per UPnP, so it
+        // must not pick up artist matches. "Beatles" is the album_artist
+        // but not an album title — this should be zero.
+        let conn = seed_db();
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.album" and upnp:album contains "Beatles""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 0);
     }
 
     // ── Artist class (Linn's Artist field) ────────────────────────────────
