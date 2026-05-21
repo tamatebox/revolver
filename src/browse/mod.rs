@@ -100,6 +100,9 @@ pub fn browse_metadata(ctx: &BrowseContext, id: &ObjectId) -> Result<DidlOutput>
         ObjectId::Performer(name) => Ok(single(person_container(id, "cat:pf", name))),
         ObjectId::Year(y) => Ok(single(year_container(id, "cat:yr", &y.to_string()))),
         ObjectId::Decade(d) => Ok(single(year_container(id, "cat:dec", &format!("{d}s")))),
+        ObjectId::UnknownGenre => Ok(single(genre_container(id, "cat:gn", "Unknown Genre"))),
+        ObjectId::UnknownYear => Ok(single(year_container(id, "cat:yr", "Unknown Year"))),
+        ObjectId::UnknownDecade => Ok(single(year_container(id, "cat:dec", "Unknown Decade"))),
         ObjectId::Album(album_id) => albums::album_metadata(ctx, *album_id),
         ObjectId::Track(track_id) => tracks::track_metadata(ctx, *track_id),
         ObjectId::Disc { album_id, disc } => {
@@ -146,6 +149,9 @@ pub fn browse_children(
         ObjectId::Performer(name) => albums::albums_by_performer_children(ctx, name, start, count),
         ObjectId::Year(y) => albums::albums_by_year_children(ctx, *y, start, count),
         ObjectId::Decade(d) => albums::albums_by_decade_children(ctx, *d, start, count),
+        ObjectId::UnknownGenre => albums::albums_by_unknown_genre_children(ctx, start, count),
+        ObjectId::UnknownYear => albums::albums_by_unknown_year_children(ctx, start, count),
+        ObjectId::UnknownDecade => albums::albums_by_unknown_decade_children(ctx, start, count),
         ObjectId::Album(album_id) => tracks::album_tracks_children(ctx, *album_id, start, count),
         ObjectId::Disc { album_id, disc } => {
             tracks::disc_tracks_children(ctx, *album_id, *disc, start, count)

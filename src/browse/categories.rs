@@ -259,95 +259,191 @@ fn facet_has_any(ctx: &BrowseContext, column: &'static str) -> Result<bool> {
 }
 
 /// #2: Under `cat:yr` — DISTINCT release year as `Year` containers, newest first.
+///
+/// Appends an `UnknownYear` bucket at the end when at least one album has
+/// **no track with a populated year**. The bucket sits at virtual index
+/// `sorted_total` so pagination math has to know it.
 pub fn years_children(ctx: &BrowseContext, start: usize, count: usize) -> Result<ChildrenResult> {
-    let total: i64 = ctx.conn.query_row(
+    let sorted_total: i64 = ctx.conn.query_row(
         "SELECT COUNT(DISTINCT year) FROM tracks WHERE year IS NOT NULL",
         [],
         |r| r.get(0),
     )?;
-    let mut stmt = ctx.conn.prepare_cached(
-        "SELECT DISTINCT year FROM tracks
-         WHERE year IS NOT NULL
-         ORDER BY year DESC LIMIT ?1 OFFSET ?2",
-    )?;
-    let years: Vec<i32> = stmt
-        .query_map(params![count as i64, start as i64], |r| r.get(0))?
-        .filter_map(|r| r.ok())
-        .collect();
-    let containers = years
+    let unknown_exists = exists_album_with_all_tracks_missing(ctx, "year")?;
+    let total = (sorted_total + i64::from(unknown_exists)) as usize;
+
+    let real_count = take_count(start, count, sorted_total as usize);
+    let mut years: Vec<i32> = Vec::new();
+    if real_count > 0 {
+        let mut stmt = ctx.conn.prepare_cached(
+            "SELECT DISTINCT year FROM tracks
+             WHERE year IS NOT NULL
+             ORDER BY year DESC LIMIT ?1 OFFSET ?2",
+        )?;
+        years = stmt
+            .query_map(params![real_count as i64, start as i64], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+    }
+    let mut containers: Vec<Container> = years
         .into_iter()
         .map(|y| year_container(&ObjectId::Year(y), "cat:yr", &y.to_string()))
         .collect();
+    if unknown_exists
+        && containers.len() < count
+        && start + containers.len() == sorted_total as usize
+    {
+        containers.push(year_container(
+            &ObjectId::UnknownYear,
+            "cat:yr",
+            "Unknown Year",
+        ));
+    }
     Ok(ChildrenResult {
         didl: DidlOutput {
             containers,
             items: vec![],
             nodes: vec![],
         },
-        total_matches: total as usize,
+        total_matches: total,
     })
 }
 
 /// #2: Under `cat:dec` — DISTINCT 10-year buckets, newest first. Buckets are
 /// computed as `(year / 10) * 10` so 1985 → 1980. Negative years cannot occur
-/// (the tag parser rejects them at scan time).
+/// (the tag parser rejects them at scan time). Unknown bucket gating mirrors
+/// `cat:yr` (same source column).
 pub fn decades_children(ctx: &BrowseContext, start: usize, count: usize) -> Result<ChildrenResult> {
-    let total: i64 = ctx.conn.query_row(
+    let sorted_total: i64 = ctx.conn.query_row(
         "SELECT COUNT(DISTINCT (year/10)*10) FROM tracks WHERE year IS NOT NULL",
         [],
         |r| r.get(0),
     )?;
-    let mut stmt = ctx.conn.prepare_cached(
-        "SELECT DISTINCT (year/10)*10 AS d FROM tracks
-         WHERE year IS NOT NULL
-         ORDER BY d DESC LIMIT ?1 OFFSET ?2",
-    )?;
-    let decades: Vec<i32> = stmt
-        .query_map(params![count as i64, start as i64], |r| r.get(0))?
-        .filter_map(|r| r.ok())
-        .collect();
-    let containers = decades
+    let unknown_exists = exists_album_with_all_tracks_missing(ctx, "year")?;
+    let total = (sorted_total + i64::from(unknown_exists)) as usize;
+
+    let real_count = take_count(start, count, sorted_total as usize);
+    let mut decades: Vec<i32> = Vec::new();
+    if real_count > 0 {
+        let mut stmt = ctx.conn.prepare_cached(
+            "SELECT DISTINCT (year/10)*10 AS d FROM tracks
+             WHERE year IS NOT NULL
+             ORDER BY d DESC LIMIT ?1 OFFSET ?2",
+        )?;
+        decades = stmt
+            .query_map(params![real_count as i64, start as i64], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+    }
+    let mut containers: Vec<Container> = decades
         .into_iter()
         .map(|d| year_container(&ObjectId::Decade(d), "cat:dec", &format!("{d}s")))
         .collect();
+    if unknown_exists
+        && containers.len() < count
+        && start + containers.len() == sorted_total as usize
+    {
+        containers.push(year_container(
+            &ObjectId::UnknownDecade,
+            "cat:dec",
+            "Unknown Decade",
+        ));
+    }
     Ok(ChildrenResult {
         didl: DidlOutput {
             containers,
             items: vec![],
             nodes: vec![],
         },
-        total_matches: total as usize,
+        total_matches: total,
     })
 }
 
-/// Under `cat:gn`: DISTINCT track genre.
+/// Under `cat:gn`: DISTINCT track genre, with an `UnknownGenre` bucket
+/// appended at the tail when at least one album has no genre on any track.
 pub fn genres_children(ctx: &BrowseContext, start: usize, count: usize) -> Result<ChildrenResult> {
-    let total: i64 = ctx.conn.query_row(
+    let sorted_total: i64 = ctx.conn.query_row(
         "SELECT COUNT(DISTINCT genre) FROM tracks WHERE genre IS NOT NULL AND genre != ''",
         [],
         |r| r.get(0),
     )?;
-    let mut stmt = ctx.conn.prepare_cached(
-        "SELECT DISTINCT genre FROM tracks
-         WHERE genre IS NOT NULL AND genre != ''
-         ORDER BY genre LIMIT ?1 OFFSET ?2",
-    )?;
-    let names: Vec<String> = stmt
-        .query_map(params![count as i64, start as i64], |r| r.get(0))?
-        .filter_map(|r| r.ok())
-        .collect();
-    let containers = names
+    let unknown_exists = exists_album_with_all_tracks_missing(ctx, "genre")?;
+    let total = (sorted_total + i64::from(unknown_exists)) as usize;
+
+    let real_count = take_count(start, count, sorted_total as usize);
+    let mut names: Vec<String> = Vec::new();
+    if real_count > 0 {
+        let mut stmt = ctx.conn.prepare_cached(
+            "SELECT DISTINCT genre FROM tracks
+             WHERE genre IS NOT NULL AND genre != ''
+             ORDER BY genre LIMIT ?1 OFFSET ?2",
+        )?;
+        names = stmt
+            .query_map(params![real_count as i64, start as i64], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+    }
+    let mut containers: Vec<Container> = names
         .into_iter()
         .map(|name| genre_container(&ObjectId::Genre(name.clone()), "cat:gn", &name))
         .collect();
+    if unknown_exists
+        && containers.len() < count
+        && start + containers.len() == sorted_total as usize
+    {
+        containers.push(genre_container(
+            &ObjectId::UnknownGenre,
+            "cat:gn",
+            "Unknown Genre",
+        ));
+    }
     Ok(ChildrenResult {
         didl: DidlOutput {
             containers,
             items: vec![],
             nodes: vec![],
         },
-        total_matches: total as usize,
+        total_matches: total,
     })
+}
+
+/// True when at least one album has zero tracks with `tracks.{column}` populated
+/// (all tracks for the album have NULL / empty in that column). Drives the
+/// "Unknown" bucket gate for cat:gn / cat:yr / cat:dec.
+///
+/// `column` is a caller-controlled literal (`"genre"` / `"year"`); the
+/// dynamic SQL is safe (no user input).
+fn exists_album_with_all_tracks_missing(ctx: &BrowseContext, column: &'static str) -> Result<bool> {
+    // Year is INTEGER (no empty-string sentinel); genre / others are TEXT and
+    // also need the != '' guard so an explicitly-empty tag counts as missing.
+    let empty_pred = if column == "year" {
+        "t.year IS NOT NULL".to_string()
+    } else {
+        format!("t.{column} IS NOT NULL AND t.{column} != ''")
+    };
+    let sql = format!(
+        "SELECT EXISTS (
+           SELECT 1 FROM albums a
+           WHERE NOT EXISTS (
+             SELECT 1 FROM tracks t
+             WHERE t.album_id = a.id AND {empty_pred}
+           )
+         )"
+    );
+    let any: i64 = ctx.conn.query_row(&sql, [], |r| r.get(0))?;
+    Ok(any != 0)
+}
+
+/// How many rows of the sorted (real) enumeration to fetch given a Browse
+/// page `[start, start+count)` and `sorted_total` real rows. Returns 0 when
+/// the page is entirely past the real-row range (the Unknown bucket may
+/// still be appended by the caller).
+fn take_count(start: usize, count: usize, sorted_total: usize) -> usize {
+    if start >= sorted_total {
+        0
+    } else {
+        count.min(sorted_total - start)
+    }
 }
 
 // ── Container builder helpers ────────────────────────────────────────────
@@ -637,5 +733,117 @@ mod tests {
         let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
         assert!(ids.contains(&"cat:yr"));
         assert!(ids.contains(&"cat:dec"));
+    }
+
+    // ── Unknown bucket tail (cat:gn / cat:yr / cat:dec) ──────────────────
+
+    /// Two albums:
+    /// - Album "Tagged" → 1 track with genre="Rock", year=1985
+    /// - Album "Untagged" → 1 track with NULL/empty genre + NULL year
+    ///
+    /// Genre enumeration has 1 real ("Rock") + Unknown Genre at tail;
+    /// year enumeration has 1 real (1985) + Unknown Year at tail.
+    fn seed_mixed_tagged_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::schema::migrate(&conn).unwrap();
+        for (album, path, genre, year) in [
+            ("Tagged", "/m/t.flac", Some("Rock"), Some(1985)),
+            ("Untagged", "/m/u.flac", None, None),
+        ] {
+            let aid = crate::db::albums::upsert(
+                &conn,
+                &crate::db::albums::AlbumKey {
+                    effective_album_artist: "AA",
+                    album,
+                    compilation: false,
+                },
+                None,
+                0,
+            )
+            .unwrap();
+            let mut row = crate::browse::test_helpers::default_track_row(aid, path, 0);
+            row.genre = genre;
+            row.year = year;
+            crate::db::tracks::upsert(&conn, &row).unwrap();
+        }
+        crate::db::albums::recalc_counts(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn ub1_genre_enumeration_appends_unknown_when_any_album_untagged() {
+        let conn = seed_mixed_tagged_db();
+        let rs = RandomState::new();
+        let s = BrowseSettings::default();
+        let r = genres_children(&ctx_with(&conn, &rs, &s), 0, 100).unwrap();
+        // 1 real ("Rock") + Unknown.
+        assert_eq!(r.total_matches, 2);
+        let titles: Vec<&str> = r.didl.containers.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(titles, vec!["Rock", "Unknown Genre"]);
+        let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
+        // Unknown encodes as `gn:` (empty suffix), distinguishing it from any base64'd name.
+        assert_eq!(ids[1], "gn:");
+    }
+
+    #[test]
+    fn ub2_year_enumeration_appends_unknown_when_any_album_yearless() {
+        let conn = seed_mixed_tagged_db();
+        let rs = RandomState::new();
+        let s = BrowseSettings::default();
+        let r = years_children(&ctx_with(&conn, &rs, &s), 0, 100).unwrap();
+        assert_eq!(r.total_matches, 2);
+        let titles: Vec<&str> = r.didl.containers.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(titles, vec!["1985", "Unknown Year"]);
+        let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids[1], "yr:0");
+    }
+
+    #[test]
+    fn ub3_decade_enumeration_appends_unknown_when_any_album_yearless() {
+        let conn = seed_mixed_tagged_db();
+        let rs = RandomState::new();
+        let s = BrowseSettings::default();
+        let r = decades_children(&ctx_with(&conn, &rs, &s), 0, 100).unwrap();
+        assert_eq!(r.total_matches, 2);
+        let titles: Vec<&str> = r.didl.containers.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(titles, vec!["1980s", "Unknown Decade"]);
+        let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids[1], "dec:0");
+    }
+
+    #[test]
+    fn ub4_no_unknown_bucket_when_all_albums_tagged() {
+        // seed_year_db: every track has both year and (the default) NULL genre.
+        // No album is fully missing year → Unknown Year must not appear.
+        let conn = seed_year_db();
+        let rs = RandomState::new();
+        let s = BrowseSettings::default();
+        let r = years_children(&ctx_with(&conn, &rs, &s), 0, 100).unwrap();
+        assert_eq!(r.total_matches, 3); // 1969, 1985, 1987 — no Unknown.
+        let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
+        assert!(!ids.contains(&"yr:0"));
+    }
+
+    #[test]
+    fn ub5_unknown_bucket_lands_on_correct_page() {
+        // Page size 1 over (1 real + 1 unknown): page 0 returns real, page 1 returns Unknown.
+        let conn = seed_mixed_tagged_db();
+        let rs = RandomState::new();
+        let s = BrowseSettings::default();
+        let p0 = genres_children(&ctx_with(&conn, &rs, &s), 0, 1).unwrap();
+        assert_eq!(p0.total_matches, 2);
+        assert_eq!(p0.didl.containers.len(), 1);
+        assert_eq!(p0.didl.containers[0].title, "Rock");
+
+        let p1 = genres_children(&ctx_with(&conn, &rs, &s), 1, 1).unwrap();
+        assert_eq!(p1.total_matches, 2);
+        assert_eq!(p1.didl.containers.len(), 1);
+        assert_eq!(p1.didl.containers[0].title, "Unknown Genre");
+
+        // start past the cap returns empty rows but total stays 2.
+        let p2 = genres_children(&ctx_with(&conn, &rs, &s), 2, 1).unwrap();
+        assert_eq!(p2.total_matches, 2);
+        assert!(p2.didl.containers.is_empty());
     }
 }

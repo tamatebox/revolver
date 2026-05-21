@@ -227,6 +227,101 @@ pub fn albums_by_year_children(
     })
 }
 
+/// Under `gn:` (UnknownGenre) — albums where every track has NULL / empty
+/// `genre`. Mirrors `albums_by_genre_children` shape but flips the EXISTS
+/// to NOT EXISTS so a single tagged track is enough to exclude the album.
+pub fn albums_by_unknown_genre_children(
+    ctx: &BrowseContext,
+    start: usize,
+    count: usize,
+) -> Result<ChildrenResult> {
+    albums_by_unknown_facet_children(
+        ctx,
+        "t.genre IS NOT NULL AND t.genre != ''",
+        ObjectId::UnknownGenre,
+        start,
+        count,
+    )
+}
+
+/// Under `yr:0` (UnknownYear) — albums where no track has a populated `year`.
+pub fn albums_by_unknown_year_children(
+    ctx: &BrowseContext,
+    start: usize,
+    count: usize,
+) -> Result<ChildrenResult> {
+    albums_by_unknown_facet_children(
+        ctx,
+        "t.year IS NOT NULL",
+        ObjectId::UnknownYear,
+        start,
+        count,
+    )
+}
+
+/// Under `dec:0` (UnknownDecade) — same source as Unknown Year (decade is
+/// derived from `year`). Kept as a distinct parent so the breadcrumb under
+/// `cat:dec` stays intuitive.
+pub fn albums_by_unknown_decade_children(
+    ctx: &BrowseContext,
+    start: usize,
+    count: usize,
+) -> Result<ChildrenResult> {
+    albums_by_unknown_facet_children(
+        ctx,
+        "t.year IS NOT NULL",
+        ObjectId::UnknownDecade,
+        start,
+        count,
+    )
+}
+
+/// Shared body for the three Unknown-bucket album lists.
+///
+/// `tagged_pred` is the SQL predicate that recognizes a *tagged* track for the
+/// facet being filtered (e.g. `"t.genre IS NOT NULL AND t.genre != ''"`).
+/// The query selects albums where **no** track matches that predicate,
+/// i.e. the album is fully untagged for that facet.
+fn albums_by_unknown_facet_children(
+    ctx: &BrowseContext,
+    tagged_pred: &str,
+    parent: ObjectId,
+    start: usize,
+    count: usize,
+) -> Result<ChildrenResult> {
+    let count_sql = format!(
+        "SELECT COUNT(*) FROM albums a
+         WHERE NOT EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id AND {tagged_pred})"
+    );
+    let total: i64 = ctx.conn.query_row(&count_sql, [], |r| r.get(0))?;
+    let list_sql = format!(
+        "SELECT a.id, a.album, a.effective_album_artist, a.track_count
+         FROM albums a
+         WHERE NOT EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id AND {tagged_pred})
+         ORDER BY a.album LIMIT ?1 OFFSET ?2"
+    );
+    let mut stmt = ctx.conn.prepare_cached(&list_sql)?;
+    let rows: Vec<(i64, String, String, i64)> = stmt
+        .query_map(params![count as i64, start as i64], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    let parent_id = object_id::encode(&parent);
+    let containers = rows
+        .into_iter()
+        .map(|(id, album, aa, tc)| album_container(ctx, id, &album, &aa, tc, &parent_id))
+        .collect();
+    Ok(ChildrenResult {
+        didl: DidlOutput {
+            containers,
+            items: vec![],
+            nodes: vec![],
+        },
+        total_matches: total as usize,
+    })
+}
+
 /// #2: Under `dec:{YYYY}` — albums released in the 10-year window
 /// `[decade, decade+9]`. The caller is responsible for passing a
 /// decade-aligned year (already enforced by `ObjectId::parse`).
@@ -338,5 +433,97 @@ pub(crate) fn album_container(
         child_count: Some(track_count),
         artist: Some(eff_aa.to_string()),
         album_art_uri: Some(format!("{}/{}", ctx.art_base_url, album_id)),
+    }
+}
+
+#[cfg(test)]
+mod unknown_bucket_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    use crate::browse::test_helpers::{default_ctx, default_track_row, open_in_memory_migrated};
+    use crate::db::{albums as db_albums, tracks as db_tracks};
+    use crate::random::RandomState;
+    use crate::state::BrowseSettings;
+
+    /// 3 albums:
+    /// - "Mixed"     → 2 tracks, one tagged with genre + year, one untagged
+    /// - "AllTagged" → 1 track with genre + year
+    /// - "AllUntagged" → 1 track with neither
+    ///
+    /// "Mixed" must NOT land in the Unknown bucket because at least one track
+    /// carries the tag. Only "AllUntagged" should appear there.
+    fn seed_three_albums() -> Connection {
+        let conn = open_in_memory_migrated();
+        #[allow(clippy::type_complexity)]
+        let cases: &[(&str, Vec<(&str, Option<&str>, Option<i32>)>)] = &[
+            (
+                "Mixed",
+                vec![
+                    ("/m/mix1.flac", Some("Rock"), Some(1985)),
+                    ("/m/mix2.flac", None, None),
+                ],
+            ),
+            ("AllTagged", vec![("/m/t.flac", Some("Jazz"), Some(1970))]),
+            ("AllUntagged", vec![("/m/u.flac", None, None)]),
+        ];
+        for (album, tracks) in cases {
+            let aid = db_albums::upsert(
+                &conn,
+                &db_albums::AlbumKey {
+                    effective_album_artist: "AA",
+                    album,
+                    compilation: false,
+                },
+                None,
+                0,
+            )
+            .unwrap();
+            for (path, genre, year) in tracks {
+                let mut row = default_track_row(aid, path, 0);
+                row.genre = *genre;
+                row.year = *year;
+                db_tracks::upsert(&conn, &row).unwrap();
+            }
+        }
+        db_albums::recalc_counts(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn ub_alb1_unknown_genre_contains_only_fully_untagged_albums() {
+        let conn = seed_three_albums();
+        let rs = RandomState::new();
+        let s = BrowseSettings::default();
+        let ctx = default_ctx(&conn, &rs, &s, 0);
+        let r = albums_by_unknown_genre_children(&ctx, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        let titles: Vec<&str> = r.didl.containers.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(titles, vec!["AllUntagged"]);
+        assert_eq!(r.didl.containers[0].parent_id, "gn:");
+    }
+
+    #[test]
+    fn ub_alb2_unknown_year_uses_same_rule_against_year_column() {
+        let conn = seed_three_albums();
+        let rs = RandomState::new();
+        let s = BrowseSettings::default();
+        let ctx = default_ctx(&conn, &rs, &s, 0);
+        let r = albums_by_unknown_year_children(&ctx, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.containers[0].title, "AllUntagged");
+        assert_eq!(r.didl.containers[0].parent_id, "yr:0");
+    }
+
+    #[test]
+    fn ub_alb3_unknown_decade_is_separate_parent_with_same_filter() {
+        let conn = seed_three_albums();
+        let rs = RandomState::new();
+        let s = BrowseSettings::default();
+        let ctx = default_ctx(&conn, &rs, &s, 0);
+        let r = albums_by_unknown_decade_children(&ctx, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.containers[0].title, "AllUntagged");
+        assert_eq!(r.didl.containers[0].parent_id, "dec:0");
     }
 }

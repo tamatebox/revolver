@@ -7,6 +7,13 @@
 //! - `yr:<YYYY>` `dec:<YYYY>` — year / decade buckets (#2). Plain integer,
 //!   no base64 (digits are URL-safe). `dec:<YYYY>` is the first year of
 //!   the decade (e.g. `dec:1980` covers 1980-1989).
+//! - `gn:` (empty payload) — "Unknown Genre" bucket. Distinct from any
+//!   real genre because base64 of any non-empty UTF-8 is at least 2 chars,
+//!   so the empty suffix is a safe sentinel (avoids the Asset UPnP
+//!   issue where a literal "Unknown Genre" string collided with real tags).
+//! - `yr:0` / `dec:0` — "Unknown Year" / "Unknown Decade" buckets. `0` is
+//!   the same sentinel because `tagger::parse_year` drops `year <= 0` so
+//!   no real row carries it.
 //! - `alb:<id>` `trk:<id>` — albums.id / tracks.id
 //! - `disc:<album_id>:<disc>` — multi-disc divider container (#17)
 
@@ -47,6 +54,13 @@ pub enum ObjectId {
     /// #2: a 10-year bucket starting at this year (e.g. `Decade(1980)`
     /// covers 1980-1989).
     Decade(i32),
+    /// "Unknown" sibling bucket appended to the end of `cat:gn` / `cat:yr` /
+    /// `cat:dec` enumerations. Selects albums whose entire track set lacks
+    /// the corresponding tag (one track with the tag → real bucket;
+    /// no track with the tag → Unknown).
+    UnknownGenre,
+    UnknownYear,
+    UnknownDecade,
     Album(i64),
     Track(i64),
     /// Disc-divider container injected into a multi-disc album's child list.
@@ -82,7 +96,13 @@ pub fn parse(s: &str) -> Option<ObjectId> {
             } else if let Some(rest) = s.strip_prefix("ar:") {
                 decode_name(rest).map(ObjectId::Artist)
             } else if let Some(rest) = s.strip_prefix("gn:") {
-                decode_name(rest).map(ObjectId::Genre)
+                // Empty payload → "Unknown Genre" sentinel. base64-encoded
+                // names are always ≥ 2 chars, so this can't collide.
+                if rest.is_empty() {
+                    Some(ObjectId::UnknownGenre)
+                } else {
+                    decode_name(rest).map(ObjectId::Genre)
+                }
             } else if let Some(rest) = s.strip_prefix("cm:") {
                 decode_name(rest).map(ObjectId::Composer)
             } else if let Some(rest) = s.strip_prefix("cn:") {
@@ -90,12 +110,20 @@ pub fn parse(s: &str) -> Option<ObjectId> {
             } else if let Some(rest) = s.strip_prefix("pf:") {
                 decode_name(rest).map(ObjectId::Performer)
             } else if let Some(rest) = s.strip_prefix("yr:") {
-                rest.parse().ok().map(ObjectId::Year)
+                let y: i32 = rest.parse().ok()?;
+                if y == 0 {
+                    // `0` is the Unknown Year sentinel (real years are >= 1).
+                    Some(ObjectId::UnknownYear)
+                } else {
+                    Some(ObjectId::Year(y))
+                }
             } else if let Some(rest) = s.strip_prefix("dec:") {
                 // Reject non-decade-aligned values to keep IDs canonical
                 // (`dec:1985` must round-trip through the encoder).
                 let y: i32 = rest.parse().ok()?;
-                if y % 10 == 0 {
+                if y == 0 {
+                    Some(ObjectId::UnknownDecade)
+                } else if y % 10 == 0 {
                     Some(ObjectId::Decade(y))
                 } else {
                     None
@@ -143,6 +171,9 @@ pub fn encode(id: &ObjectId) -> String {
         ObjectId::Performer(name) => format!("pf:{}", encode_name(name)),
         ObjectId::Year(y) => format!("yr:{}", y),
         ObjectId::Decade(y) => format!("dec:{}", y),
+        ObjectId::UnknownGenre => "gn:".to_string(),
+        ObjectId::UnknownYear => "yr:0".to_string(),
+        ObjectId::UnknownDecade => "dec:0".to_string(),
         ObjectId::Album(id) => format!("alb:{}", id),
         ObjectId::Track(id) => format!("trk:{}", id),
         ObjectId::Disc { album_id, disc } => format!("disc:{}:{}", album_id, disc),
@@ -208,6 +239,25 @@ mod tests {
     }
 
     #[test]
+    fn o8_unknown_sentinels_parse_and_round_trip() {
+        // The three Unknown sentinel IDs round-trip cleanly, and the
+        // sentinel forms (`gn:` empty / `yr:0` / `dec:0`) do not get
+        // misclassified as Genre("") / Year(0) / Decade(0).
+        assert_eq!(parse("gn:"), Some(ObjectId::UnknownGenre));
+        assert_eq!(parse("yr:0"), Some(ObjectId::UnknownYear));
+        assert_eq!(parse("dec:0"), Some(ObjectId::UnknownDecade));
+        assert_eq!(encode(&ObjectId::UnknownGenre), "gn:");
+        assert_eq!(encode(&ObjectId::UnknownYear), "yr:0");
+        assert_eq!(encode(&ObjectId::UnknownDecade), "dec:0");
+        // Real genres never encode to `gn:` — base64url of any non-empty
+        // UTF-8 byte sequence is ≥ 2 chars. Spot-check:
+        assert_eq!(encode(&ObjectId::Genre("a".to_string())), "gn:YQ");
+        // `yr:1` is the smallest legal real year and must not be sentinel.
+        assert_eq!(parse("yr:1"), Some(ObjectId::Year(1)));
+        assert_ne!(parse("yr:1"), Some(ObjectId::UnknownYear));
+    }
+
+    #[test]
     fn o7_year_and_decade_parse_and_round_trip() {
         // #2: yr:YYYY parses any positive integer; dec:YYYY accepts only
         // decade-aligned values so encoded ↔ parsed is canonical.
@@ -233,11 +283,13 @@ mod tests {
 
     // ── proptest: encode → parse round-trip for arbitrary strings ─────────────────
     proptest::proptest! {
-        /// AlbumArtist / Artist / Genre encoded with an arbitrary name must round-trip
-        /// back to the original (guarantees URL-safe base64 handles any byte sequence
-        /// including unicode).
+        /// AlbumArtist / Artist / Genre encoded with an arbitrary **non-empty** name
+        /// must round-trip back to the original. Empty strings are explicitly excluded:
+        /// `gn:` (empty payload) is the `UnknownGenre` sentinel, and at runtime the
+        /// album/track ingest filters out empty tag values anyway, so `Genre("")` is
+        /// not a legitimate runtime state.
         #[test]
-        fn op1_name_roundtrip_any_string(name in ".*") {
+        fn op1_name_roundtrip_any_string(name in ".+") {
             for build in &[
                 ObjectId::AlbumArtist as fn(String) -> ObjectId,
                 ObjectId::Artist,
