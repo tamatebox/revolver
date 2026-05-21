@@ -296,6 +296,15 @@ the `scan_lock` permit until completion. Callers poll
 report from `/admin/scan-report`. 409 Conflict is returned immediately if a
 scan is already in flight.
 
+The **startup scan** (when `scan.on_startup = true`) takes the same shape
+(#15): `main` acquires the `scan_lock` permit, then detaches the scan via
+`tokio::spawn` before binding the HTTP listener. As a result, every admin
+endpoint — including `/admin/scan-progress`, which exists to surface this
+very scan — is reachable while the initial scan is in progress. Shutdown
+still waits on `scan_lock.acquire().await`, so WAL safety on Ctrl-C is
+unchanged regardless of whether the scan was triggered at startup or via
+`/admin/rescan`.
+
 Notes:
 
 - **Rayon parallelism is bounded by `config.scan.parallel`.** Tag reading
@@ -580,7 +589,7 @@ Top-level tasks spawned from `main.rs`:
 | SSDP listener | Listens on UDP port 1900, responds to `M-SEARCH` (`ssdp.rs`) | broadcast shutdown |
 | SSDP advertiser | `ssdp:alive` on startup, periodic re-announce, `ssdp:byebye` on exit (`ssdp.rs`) | broadcast shutdown (sends byebye first) |
 | GENA sweep | Drops expired subscriptions every 60s | broadcast shutdown |
-| Scan worker | Triggered on startup (`scan.on_startup`) and from admin endpoints. Runs rayon inside `spawn_blocking`. Re-entry is blocked by `tokio::sync::Semaphore::new(1)` | Short-lived; completes per invocation |
+| Scan worker | Triggered on startup (`scan.on_startup`, #15) and from `POST /admin/rescan` (#18). Both paths detach via `tokio::spawn` so HTTP bind is never blocked behind the scan. Rayon runs inside `spawn_blocking`. Re-entry is blocked by `tokio::sync::Semaphore::new(1)` | Shutdown awaits `scan_lock.acquire()` to prevent WAL truncation mid-scan |
 | NOTIFY senders (many) | Short-lived tasks spawned per `broadcast_propchange`. Tracked in `AppState.notify_tasks` and aborted on shutdown | Aborted on shutdown |
 
 Shutdown is signaled by `tokio::signal::ctrl_c()` firing
