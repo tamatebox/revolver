@@ -271,6 +271,17 @@ fn run_inner(
                     rg_track_peak: t.tags.rg_track_peak,
                     rg_album_gain: t.tags.rg_album_gain,
                     rg_album_peak: t.tags.rg_album_peak,
+                    artist_sort: t.tags.artist_sort.as_deref(),
+                    album_artist_sort: t.tags.album_artist_sort.as_deref(),
+                    album_sort: t.tags.album_sort.as_deref(),
+                    title_sort: t.tags.title_sort.as_deref(),
+                    composer_sort: t.tags.composer_sort.as_deref(),
+                    original_year: t.tags.original_year,
+                    mb_recording_id: t.tags.mb_recording_id.as_deref(),
+                    mb_release_id: t.tags.mb_release_id.as_deref(),
+                    mb_release_group_id: t.tags.mb_release_group_id.as_deref(),
+                    mb_artist_id: t.tags.mb_artist_id.as_deref(),
+                    mb_release_artist_id: t.tags.mb_release_artist_id.as_deref(),
                 },
             )?;
             match outcome {

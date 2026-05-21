@@ -72,6 +72,18 @@ pub struct TrackRow<'a> {
     pub rg_track_peak: Option<f64>,
     pub rg_album_gain: Option<f64>,
     pub rg_album_peak: Option<f64>,
+    /// v8 capture-only fields. Stored verbatim; no query / DIDL wiring yet.
+    pub artist_sort: Option<&'a str>,
+    pub album_artist_sort: Option<&'a str>,
+    pub album_sort: Option<&'a str>,
+    pub title_sort: Option<&'a str>,
+    pub composer_sort: Option<&'a str>,
+    pub original_year: Option<i32>,
+    pub mb_recording_id: Option<&'a str>,
+    pub mb_release_id: Option<&'a str>,
+    pub mb_release_group_id: Option<&'a str>,
+    pub mb_artist_id: Option<&'a str>,
+    pub mb_release_artist_id: Option<&'a str>,
 }
 
 /// Upsert into tracks (SPEC §4.3). On `path` UNIQUE conflict, update everything
@@ -106,10 +118,15 @@ pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
            year,
            title_norm, artist_norm, genre_norm,
            composer_norm, conductor_norm, performer_norm,
-           rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak
+           rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak,
+           artist_sort, album_artist_sort, album_sort, title_sort, composer_sort,
+           original_year,
+           mb_recording_id, mb_release_id, mb_release_group_id,
+           mb_artist_id, mb_release_artist_id
          )
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,
-                 ?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31)",
+                 ?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,
+                 ?32,?33,?34,?35,?36,?37,?38,?39,?40,?41,?42)",
         params![
             row.album_id,
             row.path,
@@ -142,6 +159,17 @@ pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
             row.rg_track_peak,
             row.rg_album_gain,
             row.rg_album_peak,
+            row.artist_sort,
+            row.album_artist_sort,
+            row.album_sort,
+            row.title_sort,
+            row.composer_sort,
+            row.original_year,
+            row.mb_recording_id,
+            row.mb_release_id,
+            row.mb_release_group_id,
+            row.mb_artist_id,
+            row.mb_release_artist_id,
         ],
     )?;
     if inserted == 1 {
@@ -150,36 +178,47 @@ pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
     // Existing path: overwrite everything except `added_at`
     conn.execute(
         "UPDATE tracks SET
-           album_id       = ?1,
-           title          = ?2,
-           artist         = ?3,
-           genre          = ?4,
-           track_num      = ?5,
-           disc_num       = ?6,
-           duration_ms    = ?7,
-           sample_rate    = ?8,
-           bit_depth      = ?9,
-           channels       = ?10,
-           bitrate        = ?11,
-           codec          = ?12,
-           mime_type      = ?13,
-           file_size      = ?14,
-           mtime          = ?15,
-           composer       = ?16,
-           conductor      = ?17,
-           performer      = ?18,
-           year           = ?19,
-           title_norm     = ?20,
-           artist_norm    = ?21,
-           genre_norm     = ?22,
-           composer_norm  = ?23,
-           conductor_norm = ?24,
-           performer_norm = ?25,
-           rg_track_gain  = ?26,
-           rg_track_peak  = ?27,
-           rg_album_gain  = ?28,
-           rg_album_peak  = ?29
-         WHERE path = ?30",
+           album_id            = ?1,
+           title               = ?2,
+           artist              = ?3,
+           genre               = ?4,
+           track_num           = ?5,
+           disc_num            = ?6,
+           duration_ms         = ?7,
+           sample_rate         = ?8,
+           bit_depth           = ?9,
+           channels            = ?10,
+           bitrate             = ?11,
+           codec               = ?12,
+           mime_type           = ?13,
+           file_size           = ?14,
+           mtime               = ?15,
+           composer            = ?16,
+           conductor           = ?17,
+           performer           = ?18,
+           year                = ?19,
+           title_norm          = ?20,
+           artist_norm         = ?21,
+           genre_norm          = ?22,
+           composer_norm       = ?23,
+           conductor_norm      = ?24,
+           performer_norm      = ?25,
+           rg_track_gain       = ?26,
+           rg_track_peak       = ?27,
+           rg_album_gain       = ?28,
+           rg_album_peak       = ?29,
+           artist_sort         = ?30,
+           album_artist_sort   = ?31,
+           album_sort          = ?32,
+           title_sort          = ?33,
+           composer_sort       = ?34,
+           original_year       = ?35,
+           mb_recording_id     = ?36,
+           mb_release_id       = ?37,
+           mb_release_group_id = ?38,
+           mb_artist_id        = ?39,
+           mb_release_artist_id = ?40
+         WHERE path = ?41",
         params![
             row.album_id,
             row.title,
@@ -210,6 +249,17 @@ pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
             row.rg_track_peak,
             row.rg_album_gain,
             row.rg_album_peak,
+            row.artist_sort,
+            row.album_artist_sort,
+            row.album_sort,
+            row.title_sort,
+            row.composer_sort,
+            row.original_year,
+            row.mb_recording_id,
+            row.mb_release_id,
+            row.mb_release_group_id,
+            row.mb_artist_id,
+            row.mb_release_artist_id,
             row.path,
         ],
     )?;
@@ -315,6 +365,17 @@ mod tests {
             rg_track_peak: None,
             rg_album_gain: None,
             rg_album_peak: None,
+            artist_sort: None,
+            album_artist_sort: None,
+            album_sort: None,
+            title_sort: None,
+            composer_sort: None,
+            original_year: None,
+            mb_recording_id: None,
+            mb_release_id: None,
+            mb_release_group_id: None,
+            mb_artist_id: None,
+            mb_release_artist_id: None,
         }
     }
 
@@ -510,6 +571,107 @@ mod tests {
         assert_eq!(map.len(), 2);
         assert_eq!(map.get("/m/a.flac"), Some(&222));
         assert_eq!(map.get("/m/b.flac"), Some(&333));
+    }
+
+    // ── v8: sort / original_year / MusicBrainz round-trip through upsert
+    #[allow(clippy::type_complexity)]
+    #[test]
+    fn v8_capture_only_fields_round_trip_via_upsert() {
+        let (conn, aid) = open_with_album();
+        let mut row = sample(aid, "/m/a.flac", 100, 200);
+        row.artist_sort = Some("KIRINJI");
+        row.album_artist_sort = Some("KIRINJI");
+        row.album_sort = Some("3");
+        row.title_sort = Some("ICARUS NO MATSUEI");
+        row.composer_sort = Some("HORIGOME, Yasuyuki");
+        row.original_year = Some(2014);
+        row.mb_recording_id = Some("11111111-1111-1111-1111-111111111111");
+        row.mb_release_id = Some("22222222-2222-2222-2222-222222222222");
+        row.mb_release_group_id = Some("33333333-3333-3333-3333-333333333333");
+        row.mb_artist_id = Some("44444444-4444-4444-4444-444444444444");
+        row.mb_release_artist_id = Some("55555555-5555-5555-5555-555555555555");
+        upsert(&conn, &row).unwrap();
+
+        let (asort, aasort, alsort, tisort, csort, oy, mb_rec, mb_rel, mb_rg, mb_a, mb_ra): (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<i32>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT artist_sort, album_artist_sort, album_sort, title_sort,
+                        composer_sort, original_year,
+                        mb_recording_id, mb_release_id, mb_release_group_id,
+                        mb_artist_id, mb_release_artist_id
+                 FROM tracks WHERE path = '/m/a.flac'",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                        r.get(8)?,
+                        r.get(9)?,
+                        r.get(10)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(asort.as_deref(), Some("KIRINJI"));
+        assert_eq!(aasort.as_deref(), Some("KIRINJI"));
+        assert_eq!(alsort.as_deref(), Some("3"));
+        assert_eq!(tisort.as_deref(), Some("ICARUS NO MATSUEI"));
+        assert_eq!(csort.as_deref(), Some("HORIGOME, Yasuyuki"));
+        assert_eq!(oy, Some(2014));
+        assert_eq!(
+            mb_rec.as_deref(),
+            Some("11111111-1111-1111-1111-111111111111")
+        );
+        assert_eq!(
+            mb_rel.as_deref(),
+            Some("22222222-2222-2222-2222-222222222222")
+        );
+        assert_eq!(
+            mb_rg.as_deref(),
+            Some("33333333-3333-3333-3333-333333333333")
+        );
+        assert_eq!(
+            mb_a.as_deref(),
+            Some("44444444-4444-4444-4444-444444444444")
+        );
+        assert_eq!(
+            mb_ra.as_deref(),
+            Some("55555555-5555-5555-5555-555555555555")
+        );
+
+        // UPDATE path: change a few, clear others.
+        let mut row2 = sample(aid, "/m/a.flac", 999, 300);
+        row2.album_sort = Some("Three");
+        row2.original_year = None;
+        upsert(&conn, &row2).unwrap();
+        let (alsort2, oy2, mb_rec2): (Option<String>, Option<i32>, Option<String>) = conn
+            .query_row(
+                "SELECT album_sort, original_year, mb_recording_id
+                 FROM tracks WHERE path = '/m/a.flac'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(alsort2.as_deref(), Some("Three"));
+        assert_eq!(oy2, None);
+        assert_eq!(mb_rec2, None);
     }
 
     // ── #11: ReplayGain round-trip through upsert (INSERT + UPDATE paths)

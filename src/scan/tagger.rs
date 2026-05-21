@@ -37,6 +37,21 @@ pub struct TrackTags {
     pub rg_album_gain: Option<f64>,
     /// ReplayGain album peak as a linear amplitude.
     pub rg_album_peak: Option<f64>,
+    // ── v8: capture-only sort / original-year / MusicBrainz fields.
+    // Read here so a future PR can wire ORDER BY / DIDL without re-tagging
+    // every track. `parse_year` is reused for original release year, so the
+    // "1971" / "1971-05-15" / "(1971)" variants are accepted as for `year`.
+    pub artist_sort: Option<String>,
+    pub album_artist_sort: Option<String>,
+    pub album_sort: Option<String>,
+    pub title_sort: Option<String>,
+    pub composer_sort: Option<String>,
+    pub original_year: Option<i32>,
+    pub mb_recording_id: Option<String>,
+    pub mb_release_id: Option<String>,
+    pub mb_release_group_id: Option<String>,
+    pub mb_artist_id: Option<String>,
+    pub mb_release_artist_id: Option<String>,
     pub duration_ms: Option<u64>,
     pub sample_rate: Option<u32>,
     pub bit_depth: Option<u8>,
@@ -97,99 +112,60 @@ pub fn read(path: &Path) -> Result<TrackTags, TagError> {
         None
     };
 
-    #[allow(clippy::type_complexity)]
-    let (
-        title,
-        artist,
-        album_artist,
-        album,
-        genre,
-        compilation,
-        track_num,
-        disc_num,
-        composer,
-        conductor,
-        performer,
-        year,
-        rg_track_gain,
-        rg_track_peak,
-        rg_album_gain,
-        rg_album_peak,
-    ): (
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        bool,
-        Option<u32>,
-        Option<u32>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<i32>,
-        Option<f64>,
-        Option<f64>,
-        Option<f64>,
-        Option<f64>,
-    ) = if let Some(t) = tag {
-        (
-            t.get_string(ItemKey::TrackTitle).map(String::from),
-            t.get_string(ItemKey::TrackArtist).map(String::from),
-            t.get_string(ItemKey::AlbumArtist).map(String::from),
-            t.get_string(ItemKey::AlbumTitle).map(String::from),
-            t.get_string(ItemKey::Genre).map(String::from),
-            t.get_string(ItemKey::FlagCompilation)
-                .map(parse_bool_flag)
-                .unwrap_or(false),
-            t.get_string(ItemKey::TrackNumber)
-                .and_then(parse_num_prefix),
-            t.get_string(ItemKey::DiscNumber).and_then(parse_num_prefix),
-            t.get_string(ItemKey::Composer).map(String::from),
-            t.get_string(ItemKey::Conductor).map(String::from),
-            t.get_string(ItemKey::Performer).map(String::from),
-            // ItemKey::Year covers MP3 TDRC / TYER, Vorbis DATE / YEAR, and M4A ©day.
-            // Falls back to RecordingDate when Year is absent (some MP4 / Vorbis
-            // writers populate only the dated variant).
-            t.get_string(ItemKey::Year)
-                .or_else(|| t.get_string(ItemKey::RecordingDate))
-                .and_then(parse_year),
-            // #11: ReplayGain. lofty maps the four standard tags onto these
-            // ItemKey variants regardless of container (Vorbis comments, MP3
-            // TXXX, M4A `----:com.apple.iTunes:replaygain_*`).
-            t.get_string(ItemKey::ReplayGainTrackGain)
-                .and_then(parse_rg),
-            t.get_string(ItemKey::ReplayGainTrackPeak)
-                .and_then(parse_rg),
-            t.get_string(ItemKey::ReplayGainAlbumGain)
-                .and_then(parse_rg),
-            t.get_string(ItemKey::ReplayGainAlbumPeak)
-                .and_then(parse_rg),
-        )
-    } else {
-        (
-            None, None, None, None, None, false, None, None, None, None, None, None, None, None,
-            None, None,
-        )
-    };
+    // Per-field reads on `Option<&Tag>` so we don't need a 30-element tuple
+    // destructure to handle "no tag block". Each helper closes over `tag` and
+    // returns `None` when the tag is absent — same semantics as the old tuple,
+    // but adding the next field is a one-line change instead of three.
+    let s =
+        |key: ItemKey| -> Option<String> { tag.and_then(|t| t.get_string(key).map(String::from)) };
+    let s_parsed_year =
+        |key: ItemKey| -> Option<i32> { tag.and_then(|t| t.get_string(key).and_then(parse_year)) };
+    let s_rg =
+        |key: ItemKey| -> Option<f64> { tag.and_then(|t| t.get_string(key).and_then(parse_rg)) };
 
     Ok(TrackTags {
-        title,
-        artist,
-        album_artist,
-        album,
-        genre,
-        compilation,
-        track_num,
-        disc_num,
-        composer,
-        conductor,
-        performer,
-        year,
-        rg_track_gain,
-        rg_track_peak,
-        rg_album_gain,
-        rg_album_peak,
+        title: s(ItemKey::TrackTitle),
+        artist: s(ItemKey::TrackArtist),
+        album_artist: s(ItemKey::AlbumArtist),
+        album: s(ItemKey::AlbumTitle),
+        genre: s(ItemKey::Genre),
+        compilation: tag
+            .and_then(|t| t.get_string(ItemKey::FlagCompilation))
+            .map(parse_bool_flag)
+            .unwrap_or(false),
+        track_num: tag
+            .and_then(|t| t.get_string(ItemKey::TrackNumber))
+            .and_then(parse_num_prefix),
+        disc_num: tag
+            .and_then(|t| t.get_string(ItemKey::DiscNumber))
+            .and_then(parse_num_prefix),
+        composer: s(ItemKey::Composer),
+        conductor: s(ItemKey::Conductor),
+        performer: s(ItemKey::Performer),
+        // ItemKey::Year covers MP3 TDRC / TYER, Vorbis DATE / YEAR, and M4A ©day.
+        // Falls back to RecordingDate when Year is absent (some MP4 / Vorbis
+        // writers populate only the dated variant).
+        year: s_parsed_year(ItemKey::Year).or_else(|| s_parsed_year(ItemKey::RecordingDate)),
+        // #11: ReplayGain. lofty maps the four standard tags onto these
+        // ItemKey variants regardless of container (Vorbis comments, MP3
+        // TXXX, M4A `----:com.apple.iTunes:replaygain_*`).
+        rg_track_gain: s_rg(ItemKey::ReplayGainTrackGain),
+        rg_track_peak: s_rg(ItemKey::ReplayGainTrackPeak),
+        rg_album_gain: s_rg(ItemKey::ReplayGainAlbumGain),
+        rg_album_peak: s_rg(ItemKey::ReplayGainAlbumPeak),
+        // v8 capture-only fields. lofty normalizes the per-format names
+        // (TSOP / ARTISTSORT / soar etc.) onto the same ItemKey variants.
+        artist_sort: s(ItemKey::TrackArtistSortOrder),
+        album_artist_sort: s(ItemKey::AlbumArtistSortOrder),
+        album_sort: s(ItemKey::AlbumTitleSortOrder),
+        title_sort: s(ItemKey::TrackTitleSortOrder),
+        composer_sort: s(ItemKey::ComposerSortOrder),
+        original_year: s_parsed_year(ItemKey::OriginalReleaseDate),
+        mb_recording_id: s(ItemKey::MusicBrainzRecordingId),
+        mb_release_id: s(ItemKey::MusicBrainzReleaseId),
+        mb_release_group_id: s(ItemKey::MusicBrainzReleaseGroupId),
+        mb_artist_id: s(ItemKey::MusicBrainzArtistId),
+        mb_release_artist_id: s(ItemKey::MusicBrainzReleaseArtistId),
         duration_ms: Some(props.duration().as_millis() as u64),
         sample_rate: props.sample_rate(),
         bit_depth,

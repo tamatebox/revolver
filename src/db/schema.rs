@@ -10,7 +10,7 @@ use crate::error::Result;
 /// would silently corrupt data).
 ///
 /// Bump by +1 whenever a column is added or removed.
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// Table definitions from SPEC §3.1. Idempotent via `CREATE ... IF NOT EXISTS`.
 const SCHEMA_SQL: &str = r#"
@@ -75,7 +75,20 @@ CREATE TABLE IF NOT EXISTS tracks (
   rg_track_gain  REAL,
   rg_track_peak  REAL,
   rg_album_gain  REAL,
-  rg_album_peak  REAL
+  rg_album_peak  REAL,
+  -- v8: capture-only sort / original-year / MusicBrainz fields. Read at scan
+  -- time so a future PR can wire queries / DIDL without re-tagging 100k files.
+  artist_sort         TEXT,
+  album_artist_sort   TEXT,
+  album_sort          TEXT,
+  title_sort          TEXT,
+  composer_sort       TEXT,
+  original_year       INTEGER,
+  mb_recording_id     TEXT,
+  mb_release_id       TEXT,
+  mb_release_group_id TEXT,
+  mb_artist_id        TEXT,
+  mb_release_artist_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_trk_album  ON tracks(album_id);
@@ -133,6 +146,21 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_column(conn, "tracks", "rg_track_peak", "REAL")?;
     ensure_column(conn, "tracks", "rg_album_gain", "REAL")?;
     ensure_column(conn, "tracks", "rg_album_peak", "REAL")?;
+    // Capture-only fields (schema v8): read at scan time, no queries / DIDL
+    // wiring yet. Future PRs will denormalize to `albums` and switch ORDER BY
+    // for cat:aa / cat:al / cat:ar / cat:yr to use the sort / original_year
+    // columns; the MB ids enable dedup + external lookups when wired up.
+    ensure_column(conn, "tracks", "artist_sort", "TEXT")?;
+    ensure_column(conn, "tracks", "album_artist_sort", "TEXT")?;
+    ensure_column(conn, "tracks", "album_sort", "TEXT")?;
+    ensure_column(conn, "tracks", "title_sort", "TEXT")?;
+    ensure_column(conn, "tracks", "composer_sort", "TEXT")?;
+    ensure_column(conn, "tracks", "original_year", "INTEGER")?;
+    ensure_column(conn, "tracks", "mb_recording_id", "TEXT")?;
+    ensure_column(conn, "tracks", "mb_release_id", "TEXT")?;
+    ensure_column(conn, "tracks", "mb_release_group_id", "TEXT")?;
+    ensure_column(conn, "tracks", "mb_artist_id", "TEXT")?;
+    ensure_column(conn, "tracks", "mb_release_artist_id", "TEXT")?;
     // Create indexes only after the columns are guaranteed to exist.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_trk_played ON tracks(last_played_at DESC)",
@@ -627,6 +655,84 @@ mod tests {
             .unwrap();
         assert_eq!(title_norm, "hit");
         assert_eq!(artist_norm, "みゆき");
+    }
+
+    #[test]
+    fn s12_v8_capture_only_columns_exist_after_migrate() {
+        // v8 added sort / original_year / MusicBrainz columns on tracks.
+        // All nullable; verify they exist with the expected affinity.
+        let conn = open_in_memory_with_fk();
+        let mut stmt = conn.prepare("PRAGMA table_info(tracks)").unwrap();
+        let cols: Vec<(String, String)> = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for (name, ty) in [
+            ("artist_sort", "TEXT"),
+            ("album_artist_sort", "TEXT"),
+            ("album_sort", "TEXT"),
+            ("title_sort", "TEXT"),
+            ("composer_sort", "TEXT"),
+            ("original_year", "INTEGER"),
+            ("mb_recording_id", "TEXT"),
+            ("mb_release_id", "TEXT"),
+            ("mb_release_group_id", "TEXT"),
+            ("mb_artist_id", "TEXT"),
+            ("mb_release_artist_id", "TEXT"),
+        ] {
+            let row = cols.iter().find(|(n, _)| n == name);
+            assert!(row.is_some(), "tracks.{name} missing");
+            assert_eq!(row.unwrap().1, ty, "{name} affinity mismatch");
+        }
+    }
+
+    #[test]
+    fn s13_v8_columns_added_to_pre_v8_db_via_alter() {
+        // Hand-build a pre-v8 schema (one without the capture-only columns) and
+        // verify migrate() adds them via ALTER, preserving existing rows.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE albums (
+               id INTEGER PRIMARY KEY,
+               effective_album_artist TEXT NOT NULL,
+               album TEXT NOT NULL,
+               compilation INTEGER NOT NULL DEFAULT 0,
+               album_artist_raw TEXT,
+               first_seen_at INTEGER NOT NULL,
+               track_count INTEGER NOT NULL DEFAULT 0,
+               total_duration_ms INTEGER NOT NULL DEFAULT 0,
+               quality TEXT NOT NULL DEFAULT 'unknown'
+             );
+             CREATE TABLE tracks (
+               id INTEGER PRIMARY KEY,
+               album_id INTEGER NOT NULL,
+               path TEXT NOT NULL UNIQUE,
+               title TEXT, artist TEXT, genre TEXT,
+               track_num INTEGER, disc_num INTEGER, duration_ms INTEGER,
+               sample_rate INTEGER, bit_depth INTEGER, channels INTEGER,
+               bitrate INTEGER, codec TEXT, mime_type TEXT, file_size INTEGER,
+               added_at INTEGER NOT NULL,
+               mtime INTEGER NOT NULL
+             );
+             INSERT INTO albums (id, effective_album_artist, album, first_seen_at)
+               VALUES (1, 'AA', 'Alb', 0);
+             INSERT INTO tracks (album_id, path, added_at, mtime)
+               VALUES (1, '/m/a.flac', 0, 0);",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        // New columns exist and existing row reads them back as NULL.
+        let (asort, oy, mb_rec): (Option<String>, Option<i32>, Option<String>) = conn
+            .query_row(
+                "SELECT artist_sort, original_year, mb_recording_id FROM tracks WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(asort, None);
+        assert_eq!(oy, None);
+        assert_eq!(mb_rec, None);
     }
 
     #[test]
