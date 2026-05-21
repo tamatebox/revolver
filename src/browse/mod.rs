@@ -224,6 +224,10 @@ mod tests {
                 conductor: None,
                 performer: None,
                 year: Some(1969),
+                rg_track_gain: None,
+                rg_track_peak: None,
+                rg_album_gain: None,
+                rg_album_peak: None,
             },
         )
         .unwrap();
@@ -251,6 +255,10 @@ mod tests {
                 conductor: None,
                 performer: None,
                 year: Some(1969),
+                rg_track_gain: None,
+                rg_track_peak: None,
+                rg_album_gain: None,
+                rg_album_peak: None,
             },
         )
         .unwrap();
@@ -278,6 +286,10 @@ mod tests {
                 conductor: None,
                 performer: None,
                 year: Some(2001),
+                rg_track_gain: None,
+                rg_track_peak: None,
+                rg_album_gain: None,
+                rg_album_peak: None,
             },
         )
         .unwrap();

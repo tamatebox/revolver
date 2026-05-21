@@ -10,7 +10,7 @@ use crate::error::Result;
 /// would silently corrupt data).
 ///
 /// Bump by +1 whenever a column is added or removed.
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// Table definitions from SPEC §3.1. Idempotent via `CREATE ... IF NOT EXISTS`.
 const SCHEMA_SQL: &str = r#"
@@ -69,7 +69,13 @@ CREATE TABLE IF NOT EXISTS tracks (
   genre_norm     TEXT,
   composer_norm  TEXT,
   conductor_norm TEXT,
-  performer_norm TEXT
+  performer_norm TEXT,
+  -- #11: ReplayGain tags. Gain values are dB (signed); peak values are
+  -- linear amplitude (0..~1.x). Nullable — most libraries are partial.
+  rg_track_gain  REAL,
+  rg_track_peak  REAL,
+  rg_album_gain  REAL,
+  rg_album_peak  REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_trk_album  ON tracks(album_id);
@@ -121,6 +127,12 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_column(conn, "tracks", "performer_norm", "TEXT")?;
     ensure_column(conn, "albums", "album_norm", "TEXT")?;
     ensure_column(conn, "albums", "effective_album_artist_norm", "TEXT")?;
+    // #11: ReplayGain (per-track gain/peak, optional per-album gain/peak).
+    // Nullable REAL — no defaults, NULL means "tag absent".
+    ensure_column(conn, "tracks", "rg_track_gain", "REAL")?;
+    ensure_column(conn, "tracks", "rg_track_peak", "REAL")?;
+    ensure_column(conn, "tracks", "rg_album_gain", "REAL")?;
+    ensure_column(conn, "tracks", "rg_album_peak", "REAL")?;
     // Create indexes only after the columns are guaranteed to exist.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_trk_played ON tracks(last_played_at DESC)",
@@ -615,6 +627,28 @@ mod tests {
             .unwrap();
         assert_eq!(title_norm, "hit");
         assert_eq!(artist_norm, "みゆき");
+    }
+
+    #[test]
+    fn s11_rg_columns_exist_after_migrate() {
+        // #11: tracks gains 4 nullable REAL columns for ReplayGain values.
+        let conn = open_in_memory_with_fk();
+        let mut stmt = conn.prepare("PRAGMA table_info(tracks)").unwrap();
+        let cols: Vec<(String, String)> = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for expected in [
+            "rg_track_gain",
+            "rg_track_peak",
+            "rg_album_gain",
+            "rg_album_peak",
+        ] {
+            let row = cols.iter().find(|(n, _)| n == expected);
+            assert!(row.is_some(), "tracks.{expected} missing");
+            assert_eq!(row.unwrap().1, "REAL", "{expected} should be REAL");
+        }
     }
 
     #[test]

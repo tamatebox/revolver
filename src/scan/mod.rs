@@ -267,6 +267,10 @@ fn run_inner(
                     conductor: t.tags.conductor.as_deref(),
                     performer: t.tags.performer.as_deref(),
                     year: t.tags.year,
+                    rg_track_gain: t.tags.rg_track_gain,
+                    rg_track_peak: t.tags.rg_track_peak,
+                    rg_album_gain: t.tags.rg_album_gain,
+                    rg_album_peak: t.tags.rg_album_peak,
                 },
             )?;
             match outcome {

@@ -122,7 +122,12 @@ CREATE TABLE tracks (
   mtime         INTEGER NOT NULL,        -- for incremental-scan diffing
   -- Play stats (for Recently Played, §6.8)
   play_count    INTEGER NOT NULL DEFAULT 0,
-  last_played_at INTEGER                  -- unix seconds, nullable
+  last_played_at INTEGER,                  -- unix seconds, nullable
+  -- #11: ReplayGain. dB for gain, linear amplitude for peak. All nullable.
+  rg_track_gain REAL,
+  rg_track_peak REAL,
+  rg_album_gain REAL,
+  rg_album_peak REAL
 );
 
 CREATE INDEX idx_trk_album    ON tracks(album_id);
@@ -1199,7 +1204,11 @@ point or renderer can use the server. Vendor-specific extensions
 
 - **No vendor-specific Media Server extensions** (`X_MAP_BROWSE_ENTRY`, etc.):
   irrelevant to other clients, and pure maintenance burden.
-- **No Sonos `r:` namespace** (Sonos-only).
+- **No Sonos `r:` namespace** (Sonos-only). This is why **ReplayGain values
+  are stored but not surfaced in DIDL-Lite** (#11) — no standard UPnP
+  element exists for gain/peak. The values live on `tracks.rg_*` and are
+  exposed only via `/admin/stats` (`tracks_with_replaygain`) until a
+  standard emerges.
 - **`upnp:longDescription` is not used for important data**: rendering is
   inconsistent across clients. If information matters, put it in `dc:title`
   or in a dedicated container.
@@ -1373,6 +1382,16 @@ quality_in_title_show_specs = true           # include numeric specs like "Hi-Re
     search input fed through the same pipeline. SearchCriteria's
     `read_string` now slices the source `&str` so non-ASCII query
     values survive intact.
+
+23. ReplayGain capture (#11). New nullable `tracks.{rg_track_gain,
+    rg_track_peak, rg_album_gain, rg_album_peak}` REAL columns. Tagger
+    reads `REPLAYGAIN_TRACK_GAIN` / `REPLAYGAIN_TRACK_PEAK` /
+    `REPLAYGAIN_ALBUM_GAIN` / `REPLAYGAIN_ALBUM_PEAK` via lofty's
+    `ItemKey::ReplayGain*` variants (Vorbis / TXXX / iTunes mp4 atoms);
+    `parse_rg` strips the optional `" dB"` suffix and drops non-finite
+    values. `/admin/stats` exposes `tracks_with_replaygain` (count of
+    rows with `rg_track_gain IS NOT NULL`) as a coverage diagnostic.
+    DIDL exposure is deferred — see §10.2.
 
 ### Future Work
 

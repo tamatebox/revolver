@@ -432,6 +432,10 @@ mod tests {
                     conductor: None,
                     performer: None,
                     year: None,
+                    rg_track_gain: None,
+                    rg_track_peak: None,
+                    rg_album_gain: None,
+                    rg_album_peak: None,
                 },
             )
             .unwrap();

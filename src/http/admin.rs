@@ -167,6 +167,10 @@ pub struct StatsResponse {
     pub tracks_total: i64,
     pub total_duration_ms: i64,
     pub quality_breakdown: QualityBreakdown,
+    /// #11: track-level ReplayGain coverage (counts rows where the track-gain
+    /// tag is set). Stays at 0 on libraries that never tagged ReplayGain;
+    /// useful as a "is this library RG-tagged?" diagnostic for the admin UI.
+    pub tracks_with_replaygain: i64,
     pub plays_total: i64,
     pub played_albums_total: i64,
     pub last_scan: Option<LastScan>,
@@ -247,6 +251,14 @@ pub async fn stats(State(state): State<AppState>) -> Result<Json<StatsResponse>,
             }
         }
 
+        // #11: count tracks with a usable track-gain. NULL means "tag absent",
+        // so this is a true coverage metric across the library.
+        let tracks_with_replaygain: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM tracks WHERE rg_track_gain IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )?;
+
         let plays_total: i64 =
             conn.query_row("SELECT COALESCE(SUM(play_count), 0) FROM tracks", [], |r| {
                 r.get(0)
@@ -291,6 +303,7 @@ pub async fn stats(State(state): State<AppState>) -> Result<Json<StatsResponse>,
             tracks_total,
             total_duration_ms,
             quality_breakdown: breakdown,
+            tracks_with_replaygain,
             plays_total,
             played_albums_total,
             last_scan,
@@ -514,7 +527,54 @@ mod tests {
         assert_eq!(v["played_albums_total"], 0);
         assert_eq!(v["quality_breakdown"]["hires"], 0);
         assert_eq!(v["quality_breakdown"]["unknown"], 0);
+        // #11: coverage zero on an empty library.
+        assert_eq!(v["tracks_with_replaygain"], 0);
         assert!(v["last_scan"].is_null());
+    }
+
+    // #11: tracks_with_replaygain counts only rows with a non-null
+    // rg_track_gain. Tracks that carry only album-level gain (or no RG at
+    // all) are excluded — the metric is "tracks with usable RG", not
+    // "tracks touched by any RG tag".
+    #[tokio::test]
+    async fn st_rg1_replaygain_coverage_counts_track_gain_only() {
+        let (state, _db, _lib) = test_state_with_library();
+        {
+            let conn = state.db_pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO albums (effective_album_artist, album, compilation, first_seen_at)
+                 VALUES ('AA', 'A', 0, 0)",
+                [],
+            )
+            .unwrap();
+            // Track with track-gain set → counts.
+            conn.execute(
+                "INSERT INTO tracks (album_id, path, added_at, mtime, codec, mime_type, file_size,
+                                     rg_track_gain, rg_track_peak)
+                 VALUES (1, '/m/a.flac', 0, 0, 'flac', 'audio/flac', 0, -7.34, 0.98)",
+                [],
+            )
+            .unwrap();
+            // Track with only album-gain → does NOT count.
+            conn.execute(
+                "INSERT INTO tracks (album_id, path, added_at, mtime, codec, mime_type, file_size,
+                                     rg_album_gain)
+                 VALUES (1, '/m/b.flac', 0, 0, 'flac', 'audio/flac', 0, -8.0)",
+                [],
+            )
+            .unwrap();
+            // Track with no RG → does NOT count.
+            conn.execute(
+                "INSERT INTO tracks (album_id, path, added_at, mtime, codec, mime_type, file_size)
+                 VALUES (1, '/m/c.flac', 0, 0, 'flac', 'audio/flac', 0)",
+                [],
+            )
+            .unwrap();
+        }
+        let app = crate::http::router(state);
+        let v = fetch_stats_json(app).await;
+        assert_eq!(v["tracks_total"], 3);
+        assert_eq!(v["tracks_with_replaygain"], 1);
     }
 
     #[tokio::test]

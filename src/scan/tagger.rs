@@ -27,6 +27,16 @@ pub struct TrackTags {
     /// Stored as a 4-digit calendar year; non-positive / out-of-range values
     /// (≤ 0 or ≥ 9999) are dropped at parse time.
     pub year: Option<i32>,
+    /// ReplayGain track gain in dB (#11). Parsed from
+    /// `REPLAYGAIN_TRACK_GAIN` (Vorbis / TXXX), `Mp4Atom("----:com.apple.iTunes:replaygain_track_gain")`,
+    /// etc. `None` when absent or unparseable.
+    pub rg_track_gain: Option<f64>,
+    /// ReplayGain track peak as a linear amplitude (0..~1.x).
+    pub rg_track_peak: Option<f64>,
+    /// ReplayGain album gain in dB.
+    pub rg_album_gain: Option<f64>,
+    /// ReplayGain album peak as a linear amplitude.
+    pub rg_album_peak: Option<f64>,
     pub duration_ms: Option<u64>,
     pub sample_rate: Option<u32>,
     pub bit_depth: Option<u8>,
@@ -87,6 +97,7 @@ pub fn read(path: &Path) -> Result<TrackTags, TagError> {
         None
     };
 
+    #[allow(clippy::type_complexity)]
     let (
         title,
         artist,
@@ -100,6 +111,27 @@ pub fn read(path: &Path) -> Result<TrackTags, TagError> {
         conductor,
         performer,
         year,
+        rg_track_gain,
+        rg_track_peak,
+        rg_album_gain,
+        rg_album_peak,
+    ): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        bool,
+        Option<u32>,
+        Option<u32>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<i32>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
     ) = if let Some(t) = tag {
         (
             t.get_string(ItemKey::TrackTitle).map(String::from),
@@ -122,10 +154,22 @@ pub fn read(path: &Path) -> Result<TrackTags, TagError> {
             t.get_string(ItemKey::Year)
                 .or_else(|| t.get_string(ItemKey::RecordingDate))
                 .and_then(parse_year),
+            // #11: ReplayGain. lofty maps the four standard tags onto these
+            // ItemKey variants regardless of container (Vorbis comments, MP3
+            // TXXX, M4A `----:com.apple.iTunes:replaygain_*`).
+            t.get_string(ItemKey::ReplayGainTrackGain)
+                .and_then(parse_rg),
+            t.get_string(ItemKey::ReplayGainTrackPeak)
+                .and_then(parse_rg),
+            t.get_string(ItemKey::ReplayGainAlbumGain)
+                .and_then(parse_rg),
+            t.get_string(ItemKey::ReplayGainAlbumPeak)
+                .and_then(parse_rg),
         )
     } else {
         (
-            None, None, None, None, None, false, None, None, None, None, None, None,
+            None, None, None, None, None, false, None, None, None, None, None, None, None, None,
+            None, None,
         )
     };
 
@@ -142,6 +186,10 @@ pub fn read(path: &Path) -> Result<TrackTags, TagError> {
         conductor,
         performer,
         year,
+        rg_track_gain,
+        rg_track_peak,
+        rg_album_gain,
+        rg_album_peak,
         duration_ms: Some(props.duration().as_millis() as u64),
         sample_rate: props.sample_rate(),
         bit_depth,
@@ -174,6 +222,33 @@ fn parse_year(s: &str) -> Option<i32> {
     let y: i32 = head.parse().ok()?;
     if (1..9999).contains(&y) {
         Some(y)
+    } else {
+        None
+    }
+}
+
+/// Parse a ReplayGain string into a `f64` (#11). Accepts both forms that
+/// appear in the wild:
+///
+/// - gain: `"-7.34 dB"` / `"-7.34"` / `"+0.42 db"` (case-insensitive ` dB`)
+/// - peak: `"0.987654"` (linear amplitude, never suffixed)
+///
+/// Returns `None` on empty / non-numeric / non-finite values so a junk tag
+/// (e.g. `"  "` or `"NaN"`) does not flip downstream NULL checks. Non-finite
+/// values are dropped because they would be lossy at the SQLite REAL boundary.
+fn parse_rg(s: &str) -> Option<f64> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let head = trimmed
+        .strip_suffix(|c: char| c == 'b' || c == 'B')
+        .and_then(|s| s.strip_suffix(|c: char| c == 'd' || c == 'D'))
+        .unwrap_or(trimmed)
+        .trim();
+    let v: f64 = head.parse().ok()?;
+    if v.is_finite() {
+        Some(v)
     } else {
         None
     }
@@ -301,6 +376,36 @@ mod tests {
         assert_eq!(parse_year("-1"), None);
         assert_eq!(parse_year("9999"), None); // common "unknown" sentinel
         assert_eq!(parse_year("99999"), None);
+    }
+
+    // #11: ReplayGain. Vorbis / ID3v2.4 / iTunes all spell the values
+    // slightly differently; the parser is the only thing standing between
+    // those tags and the SQLite REAL column.
+    #[test]
+    fn pr1_parse_rg_gain_accepts_suffix_variants() {
+        assert_eq!(parse_rg("-7.34 dB"), Some(-7.34));
+        assert_eq!(parse_rg("-7.34 db"), Some(-7.34));
+        assert_eq!(parse_rg("+0.42 dB"), Some(0.42));
+        assert_eq!(parse_rg("-7.34"), Some(-7.34));
+        assert_eq!(parse_rg(" -7.34 dB "), Some(-7.34));
+    }
+
+    #[test]
+    fn pr2_parse_rg_peak_accepts_linear_amplitude() {
+        // Peak is unsuffixed in every format; just a float.
+        assert_eq!(parse_rg("0.987654"), Some(0.987654));
+        assert_eq!(parse_rg("1.012345"), Some(1.012345));
+    }
+
+    #[test]
+    fn pr3_parse_rg_rejects_garbage_and_nonfinite() {
+        assert_eq!(parse_rg(""), None);
+        assert_eq!(parse_rg("   "), None);
+        assert_eq!(parse_rg("nope"), None);
+        assert_eq!(parse_rg("dB"), None);
+        // NaN / inf are technically parseable but useless downstream.
+        assert_eq!(parse_rg("NaN"), None);
+        assert_eq!(parse_rg("inf"), None);
     }
 
     // SPEC §7.3 MIME mapping. Linn reads the codec from protocolInfo,

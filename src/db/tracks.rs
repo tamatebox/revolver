@@ -66,6 +66,12 @@ pub struct TrackRow<'a> {
     pub performer: Option<&'a str>,
     /// #2: release year. NULL when absent or unparseable.
     pub year: Option<i32>,
+    /// #11: ReplayGain. All four are independent; track-level may be set
+    /// even when the album-level pair is absent (single-track releases).
+    pub rg_track_gain: Option<f64>,
+    pub rg_track_peak: Option<f64>,
+    pub rg_album_gain: Option<f64>,
+    pub rg_album_peak: Option<f64>,
 }
 
 /// Upsert into tracks (SPEC §4.3). On `path` UNIQUE conflict, update everything
@@ -99,10 +105,11 @@ pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
            composer, conductor, performer,
            year,
            title_norm, artist_norm, genre_norm,
-           composer_norm, conductor_norm, performer_norm
+           composer_norm, conductor_norm, performer_norm,
+           rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak
          )
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,
-                 ?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)",
+                 ?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31)",
         params![
             row.album_id,
             row.path,
@@ -131,6 +138,10 @@ pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
             composer_norm,
             conductor_norm,
             performer_norm,
+            row.rg_track_gain,
+            row.rg_track_peak,
+            row.rg_album_gain,
+            row.rg_album_peak,
         ],
     )?;
     if inserted == 1 {
@@ -163,8 +174,12 @@ pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
            genre_norm     = ?22,
            composer_norm  = ?23,
            conductor_norm = ?24,
-           performer_norm = ?25
-         WHERE path = ?26",
+           performer_norm = ?25,
+           rg_track_gain  = ?26,
+           rg_track_peak  = ?27,
+           rg_album_gain  = ?28,
+           rg_album_peak  = ?29
+         WHERE path = ?30",
         params![
             row.album_id,
             row.title,
@@ -191,6 +206,10 @@ pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
             composer_norm,
             conductor_norm,
             performer_norm,
+            row.rg_track_gain,
+            row.rg_track_peak,
+            row.rg_album_gain,
+            row.rg_album_peak,
             row.path,
         ],
     )?;
@@ -292,6 +311,10 @@ mod tests {
             conductor: None,
             performer: None,
             year: None,
+            rg_track_gain: None,
+            rg_track_peak: None,
+            rg_album_gain: None,
+            rg_album_peak: None,
         }
     }
 
@@ -487,5 +510,50 @@ mod tests {
         assert_eq!(map.len(), 2);
         assert_eq!(map.get("/m/a.flac"), Some(&222));
         assert_eq!(map.get("/m/b.flac"), Some(&333));
+    }
+
+    // ── #11: ReplayGain round-trip through upsert (INSERT + UPDATE paths)
+    #[test]
+    fn rg1_replaygain_values_round_trip_via_upsert() {
+        let (conn, aid) = open_with_album();
+        let mut row = sample(aid, "/m/a.flac", 100, 200);
+        row.rg_track_gain = Some(-7.34);
+        row.rg_track_peak = Some(0.987654);
+        row.rg_album_gain = Some(-8.12);
+        row.rg_album_peak = Some(0.999000);
+        upsert(&conn, &row).unwrap();
+
+        let (tg, tp, ag, ap): (f64, f64, f64, f64) = conn
+            .query_row(
+                "SELECT rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak
+                 FROM tracks WHERE path = '/m/a.flac'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert!((tg - (-7.34)).abs() < 1e-9);
+        assert!((tp - 0.987654).abs() < 1e-9);
+        assert!((ag - (-8.12)).abs() < 1e-9);
+        assert!((ap - 0.999000).abs() < 1e-9);
+
+        // UPDATE path: same path, different values → values are overwritten.
+        let mut row2 = sample(aid, "/m/a.flac", 999, 300);
+        row2.rg_track_gain = Some(-5.0);
+        row2.rg_track_peak = None;
+        row2.rg_album_gain = None;
+        row2.rg_album_peak = None;
+        upsert(&conn, &row2).unwrap();
+        let (tg2, tp2, ag2, ap2): (f64, Option<f64>, Option<f64>, Option<f64>) = conn
+            .query_row(
+                "SELECT rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak
+                 FROM tracks WHERE path = '/m/a.flac'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert!((tg2 - (-5.0)).abs() < 1e-9);
+        assert_eq!(tp2, None);
+        assert_eq!(ag2, None);
+        assert_eq!(ap2, None);
     }
 }
