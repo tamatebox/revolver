@@ -319,24 +319,32 @@
       }
     }
 
-    async function showScanReport() {
+    async function toggleScanReport(button) {
       const out = document.getElementById("last-action-output");
       const status = document.getElementById("action-status");
+      // Already visible → hide and stop here.
+      if (!out.hidden) {
+        out.hidden = true;
+        out.textContent = "";
+        status.textContent = "";
+        button.textContent = "Show last scan report";
+        return;
+      }
       status.textContent = "loading scan report…";
       status.classList.remove("error");
       try {
         const resp = await fetch("/admin/scan-report");
         if (resp.status === 404) {
           out.textContent = "(no scan run yet)";
-          out.hidden = false;
-          status.textContent = "";
-          return;
+        } else if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status}`);
+        } else {
+          const json = await resp.json();
+          out.textContent = JSON.stringify(json, null, 2);
         }
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const json = await resp.json();
-        out.textContent = JSON.stringify(json, null, 2);
         out.hidden = false;
         status.textContent = "";
+        button.textContent = "Hide last scan report";
       } catch (e) {
         status.textContent = `report fetch failed: ${e.message}`;
         status.classList.add("error");
@@ -403,7 +411,9 @@
     document.getElementById("btn-reshuffle").addEventListener("click", (e) => {
       postAction(e.currentTarget, "/admin/reshuffle", "reshuffle");
     });
-    document.getElementById("btn-show-report").addEventListener("click", showScanReport);
+    document.getElementById("btn-show-report").addEventListener("click", (e) => {
+      toggleScanReport(e.currentTarget);
+    });
 
     // ── Settings (#14) ───────────────────────────────────────────────────
     // Each row keeps its initial value so we can compute the diff at Save
