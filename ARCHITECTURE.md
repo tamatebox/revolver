@@ -39,8 +39,10 @@ src/
 │   │                        `album_norm` / `effective_album_artist_norm` (#6).
 │   ├── tracks.rs         tracks: upsert / detect_deleted / get_mtimes /
 │   │                        lookup_by_id. `upsert` populates the six `*_norm`
-│   │                        shadow columns (#6), `year` (#2), and the four
-│   │                        ReplayGain values (#11) alongside the raw fields.
+│   │                        shadow columns (#6), `year` (#2), the four
+│   │                        ReplayGain values (#11), and the v8 capture-only
+│   │                        columns (sort variants, `original_year`, MusicBrainz
+│   │                        IDs) alongside the raw fields.
 │   ├── config_overrides.rs `config_overrides` KV (#13): get / set / delete +
 │   │                        list_all for the admin config endpoints.
 │   └── state_kv.rs       server_state key-value (uuid, system_update_id, last_scan_report)
@@ -53,9 +55,13 @@ src/
 │   │                        (SPEC §4.8)
 │   ├── tagger.rs         lofty-based tag + codec + audio-properties reader.
 │   │                        Reads composer / conductor / performer (#9), release
-│   │                        year (#2, `parse_year`), and ReplayGain track / album
+│   │                        year (#2, `parse_year`), ReplayGain track / album
 │   │                        gain & peak (#11, `parse_rg` handles "-7.34 dB" /
-│   │                        "0.987654").
+│   │                        "0.987654"), and the v8 sort / original-year /
+│   │                        MusicBrainz fields via lofty's normalized ItemKey
+│   │                        variants (TSO* / ©sortname / ARTISTSORT, TDOR /
+│   │                        ORIGINALDATE, MUSICBRAINZ_* / TXXX / ----:). The
+│   │                        v8 fields are stored only; no query / DIDL wiring yet.
 │   ├── matcher.rs        Computes `effective_album_artist` and `added_at`
 │   │                        (SPEC §3.2, §4.2)
 │   ├── progress.rs       Lock-free `ScanProgress` snapshot (#12). Powers
@@ -86,8 +92,11 @@ src/
 │   │                            Variants: Root / Cat{Aa,Ar,Al,Gn,Recent,Played,Random,
 │   │                            Hires,Lossy,Mixed,Cm,Cn,Pf,Yr,Dec} +
 │   │                            AlbumArtist / Artist / Genre / Composer / Conductor /
-│   │                            Performer / Year(i32) / Decade(i32) / Album / Track /
-│   │                            Disc{album_id,disc}.
+│   │                            Performer / Year(i32) / Decade(i32) /
+│   │                            Unknown{Genre,Year,Decade} (sentinels for the
+│   │                            empty-tag buckets — encoded as `gn:` / `yr:0` /
+│   │                            `dec:0`, collision-free vs. base64 / positive
+│   │                            integers) / Album / Track / Disc{album_id,disc}.
 │   │                            (The pre-#16 `RecentRange` enum was dropped when
 │   │                            `cat:recent` was flattened to a single album list.)
 │   ├── search.rs             SearchCriteria parser (SPEC §5.4).
@@ -103,9 +112,15 @@ src/
 │   │                        facets. Container builders (plain / person / genre /
 │   │                        year). Classical and year facets self-hide via
 │   │                        `facet_has_any` when the underlying column is empty.
+│   │                        cat:gn / cat:yr / cat:dec each append an Unknown
+│   │                        bucket at the tail when the library has at least one
+│   │                        album whose tracks all lack a value for that column.
 │   ├── albums.rs         `alb:id` metadata + album list under each aa/ar/gn/cm/cn/pf
 │   │                        facet (`WHERE EXISTS` semi-join) + `yr:Y` / `dec:D`
-│   │                        filters (#2, year EXISTS / BETWEEN).
+│   │                        filters (#2, year EXISTS / BETWEEN) +
+│   │                        `albums_by_unknown_{genre,year,decade}_children`
+│   │                        for the Unknown buckets (`WHERE NOT EXISTS` against
+│   │                        the same source column).
 │   ├── tracks.rs         `trk:id` metadata + track list under `alb:id` +
 │   │                        DIDL Item builder
 │   ├── recent.rs         `cat:recent` — flat album list ordered by

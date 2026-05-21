@@ -127,7 +127,24 @@ CREATE TABLE tracks (
   rg_track_gain REAL,
   rg_track_peak REAL,
   rg_album_gain REAL,
-  rg_album_peak REAL
+  rg_album_peak REAL,
+  -- v8: capture-only fields. Read at scan time from lofty's normalized
+  -- ItemKey variants (TSO*/©sortname/ARTISTSORT for sort; TDOR/ORIGINALDATE
+  -- for original_year; TXXX/----/MUSICBRAINZ_* for the mb_* ids). Not yet
+  -- consumed by any query / DIDL emission — populated now so a future PR can
+  -- wire sort order, original release year, or MusicBrainz dedup without
+  -- forcing every user to re-scan their library a second time.
+  artist_sort          TEXT,
+  album_artist_sort    TEXT,
+  album_sort           TEXT,
+  title_sort           TEXT,
+  composer_sort        TEXT,
+  original_year        INTEGER,
+  mb_recording_id      TEXT,
+  mb_release_id        TEXT,
+  mb_release_group_id  TEXT,
+  mb_artist_id         TEXT,
+  mb_release_artist_id TEXT
 );
 
 CREATE INDEX idx_trk_album    ON tracks(album_id);
@@ -585,10 +602,19 @@ Scheme:
 | `cm:{base64(name)}` | A specific Composer (#9) | Same |
 | `cn:{base64(name)}` | A specific Conductor (#9) | Same |
 | `pf:{base64(name)}` | A specific Performer (#9) | Same |
+| `yr:{YYYY}` | A specific Release Year (#2) | Stable |
+| `dec:{YYYY}` | A 10-year Decade bucket starting at `YYYY` (#2) | Stable |
+| `gn:` (empty payload) | "Unknown Genre" sentinel | Fixed — collision-free because base64 of any non-empty UTF-8 is ≥ 2 chars |
+| `yr:0` | "Unknown Year" sentinel | Fixed — `parse_year` drops `year <= 0` so no real row owns `0` |
+| `dec:0` | "Unknown Decade" sentinel | Fixed (same reason) |
 | `alb:{album_id}` | A specific Album | Tied to `albums.id`, stable across tag edits |
 | `trk:{track_id}` | A specific Track | Tied to `tracks.id` |
 
 Name segments are **URL-safe base64** to avoid `/`, spaces, non-ASCII, etc.
+
+The Unknown sentinels are isolated in their own ID slots (not encoded as the
+literal string "Unknown Genre") to avoid the [Asset UPnP bug](https://www.dbpoweramp.com/Help/AssetUPnP/versions.html)
+where a real "Unknown Genre"-tagged album collided with the placeholder.
 
 ### 6.2 Top Level (ObjectID = "0")
 
@@ -610,6 +636,13 @@ Name segments are **URL-safe base64** to avoid `/`, spaces, non-ASCII, etc.
 ├── "cat:yr"      Year                 ← #2, surfaced only when populated
 └── "cat:dec"     Decade               ← #2, surfaced only when populated
 ```
+
+Inside `cat:gn`, `cat:yr`, and `cat:dec`, an additional **Unknown** bucket
+appears at the tail of the listing whenever the library has at least one
+album whose tracks all lack a value for that column. The bucket lists those
+albums and is hidden when every album is tagged. Sentinel ObjectIDs (`gn:`,
+`yr:0`, `dec:0`) keep these out of the regular base64 / integer ID space
+(see §6.1).
 
 `cat:recent` returns an **album list directly**, sorted by
 `MAX(tracks.added_at) by album_id` DESC. Two settings cap what shows up,
@@ -675,12 +708,6 @@ Rules:
 | `cat:al` | "Album" | `object.container` |
 | `cat:gn` | "Genre" | `object.container.genre.musicGenre` (jumpgate) or `object.container` |
 | `cat:recent` | "Recently Added" | `object.container` |
-| `cat:recent:day` | "Last day" | `object.container` |
-| `cat:recent:week` | "Last week" | `object.container` |
-| `cat:recent:month` | "Last month" | `object.container` |
-| `cat:recent:3months` | "Last 3 months" | `object.container` |
-| `cat:recent:year:YYYY` | "YYYY" | `object.container` |
-| `cat:recent:all` | "Show All" | `object.container` |
 | `cat:played` | "Recently Played" | `object.container` |
 | `cat:random` | "Random Albums" | `object.container` |
 | `cat:hires` | "Hi-Res Albums" | `object.container` |
@@ -696,6 +723,9 @@ Rules:
 | `cat:dec` | "Decade" (#2) | `object.container` |
 | `yr:YYYY` | "YYYY" (#2) | `object.container` |
 | `dec:YYYY` | "YYYYs" (#2) | `object.container` |
+| `gn:` | "Unknown Genre" | `object.container.genre.musicGenre` |
+| `yr:0` | "Unknown Year" | `object.container` |
+| `dec:0` | "Unknown Decade" | `object.container` |
 | `alb:...` | Album name | `object.container.album.musicAlbum` |
 
 Track items use `object.item.audioItem.musicTrack`.
@@ -709,22 +739,24 @@ Track items use `object.item.audioItem.musicTrack`.
 | children of `cat:ar` | `SELECT DISTINCT artist FROM tracks WHERE artist IS NOT NULL AND artist != '' ORDER BY artist LIMIT ? OFFSET ?` |
 | children of `ar:{name}` | Albums on which this artist performs. `SELECT DISTINCT a.id, a.album FROM albums a JOIN tracks t ON t.album_id = a.id WHERE t.artist = ? ORDER BY a.album LIMIT ? OFFSET ?` |
 | children of `cat:al` | `SELECT id, album, effective_album_artist FROM albums ORDER BY album LIMIT ? OFFSET ?` |
-| children of `cat:gn` | `SELECT DISTINCT genre FROM tracks WHERE genre IS NOT NULL AND genre != '' ORDER BY genre LIMIT ? OFFSET ?` |
+| children of `cat:gn` | `SELECT DISTINCT genre FROM tracks WHERE genre IS NOT NULL AND genre != '' ORDER BY genre LIMIT ? OFFSET ?` — with an Unknown Genre container appended at virtual index `sorted_total` when ≥ 1 album has every track with NULL / empty `genre` |
 | children of `gn:{name}` | `SELECT DISTINCT a.id, a.album FROM albums a JOIN tracks t ON t.album_id = a.id WHERE t.genre = ? ORDER BY a.album LIMIT ? OFFSET ?` |
 | children of `alb:{id}` | `SELECT * FROM tracks WHERE album_id = ? ORDER BY disc_num, track_num` |
-| children of `cat:recent` | Time-range sub-container list (`day` / `week` / `month` / `3months` / `year:YYYY` / `all`) constructed via the dynamic hiding rule (§6.2). |
-| children of `cat:recent:{range}` | `SELECT a.id, a.album, a.effective_album_artist FROM albums a JOIN (SELECT album_id, MAX(added_at) AS aa FROM tracks GROUP BY album_id) m ON m.album_id = a.id WHERE m.aa >= ? ORDER BY m.aa DESC LIMIT ? OFFSET ?` (`?` is the range lower bound; `all` omits the `WHERE`; `year:YYYY` uses `WHERE m.aa BETWEEN ? AND ?`.) |
-| children of `cat:played` | `SELECT id, album, effective_album_artist FROM albums a JOIN (SELECT album_id, MAX(last_played_at) AS lp FROM tracks WHERE last_played_at IS NOT NULL GROUP BY album_id) m ON m.album_id = a.id ORDER BY m.lp DESC LIMIT ? OFFSET ?` |
+| children of `cat:recent` | Flat album list (§6.7). `SELECT id, album, effective_album_artist, track_count FROM albums WHERE last_added_at IS NOT NULL [AND last_added_at >= ?lower_bound] ORDER BY last_added_at DESC, id DESC LIMIT ? OFFSET ?`. Both `total_matches` and the row slice are clamped by `browse.recently_added_limit` (`None` = no cap). |
+| children of `cat:played` | `SELECT id, album, effective_album_artist, track_count FROM albums WHERE last_played_at IS NOT NULL ORDER BY last_played_at DESC, id DESC LIMIT ? OFFSET ?` — uses the denormalized `albums.last_played_at` column maintained by the stream handler and the post-scan recalc. |
 | children of `cat:random` | Sliced from a shuffled-at-startup `album_id` array. |
 | children of `cat:hires` | `SELECT id, album, effective_album_artist FROM albums WHERE quality = 'hires' ORDER BY effective_album_artist, album LIMIT ? OFFSET ?` |
 | children of `cat:cm` (#9) | `SELECT DISTINCT composer FROM tracks WHERE composer IS NOT NULL AND composer != '' ORDER BY composer COLLATE NOCASE LIMIT ? OFFSET ?` |
 | children of `cm:{name}` (#9) | `SELECT a.id, a.album, a.effective_album_artist, a.track_count FROM albums a WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id AND t.composer = ?) ORDER BY a.album LIMIT ? OFFSET ?` |
 | `cat:cn` / `cn:{name}` (#9) | Same shape as composer, against `tracks.conductor`. |
 | `cat:pf` / `pf:{name}` (#9) | Same shape as composer, against `tracks.performer`. |
-| children of `cat:yr` (#2) | `SELECT DISTINCT year FROM tracks WHERE year IS NOT NULL ORDER BY year DESC LIMIT ? OFFSET ?` |
+| children of `cat:yr` (#2) | `SELECT DISTINCT year FROM tracks WHERE year IS NOT NULL ORDER BY year DESC LIMIT ? OFFSET ?` — with an Unknown Year container appended at virtual index `sorted_total` when ≥ 1 album has every track with NULL `year` |
 | children of `yr:{Y}` (#2) | `SELECT a.id, a.album, a.effective_album_artist, a.track_count FROM albums a WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id AND t.year = ?) ORDER BY a.album LIMIT ? OFFSET ?` |
-| children of `cat:dec` (#2) | `SELECT DISTINCT (year/10)*10 AS d FROM tracks WHERE year IS NOT NULL ORDER BY d DESC LIMIT ? OFFSET ?` |
+| children of `cat:dec` (#2) | `SELECT DISTINCT (year/10)*10 AS d FROM tracks WHERE year IS NOT NULL ORDER BY d DESC LIMIT ? OFFSET ?` — with an Unknown Decade tail under the same condition as `cat:yr` |
 | children of `dec:{D}` (#2) | Same shape as `yr:`, predicate `t.year BETWEEN ? AND ?+9`. |
+| children of `gn:` (Unknown Genre) | `SELECT ... FROM albums a WHERE NOT EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id AND t.genre IS NOT NULL AND t.genre != '') ORDER BY a.album LIMIT ? OFFSET ?` — i.e., every track lacks a genre tag |
+| children of `yr:0` (Unknown Year) | Same shape, predicate `t.year IS NOT NULL` (album has zero tagged tracks) |
+| children of `dec:0` (Unknown Decade) | Same shape as `yr:0` (decade shares the `year` column) |
 | children of `cat:lossy` | `SELECT id, album, effective_album_artist FROM albums WHERE quality = 'lossy' ORDER BY effective_album_artist, album LIMIT ? OFFSET ?` |
 | children of `cat:mixed` | `SELECT id, album, effective_album_artist FROM albums WHERE quality = 'mixed' ORDER BY effective_album_artist, album LIMIT ? OFFSET ?` |
 

@@ -7,14 +7,15 @@ Single binary, SQLite-backed, LAN-only.
 
 - **Library scanner** — FLAC / WAV / AIFF / ALAC / M4A (AAC) / MP3. High-resolution audio (up to 24-bit / 192 kHz) supported. Compilation detection, deletion detection, automatic quality classification, and ReplayGain capture (coverage surfaced via `/admin/stats`).
 - **UPnP/DLNA discovery** — Announced over SSDP, visible to standard UPnP control points.
-- **Browse** — Top-level facets (selection + order configurable from the admin UI):
+- **Browse** — Top-level facets (selection + order configurable from the admin UI). Drag-and-drop reorder, hide / show toggle:
   - Album Artist / Artist / Album / Genre
   - Recently Added (flat album list, optionally capped by count + age in days)
   - Recently Played (counted by stream hits)
-  - Random Albums (reshuffled on startup, after each scan, or on demand)
+  - Random Albums (reshuffled on startup, after each scan, or on demand; limit changes auto-reshuffle)
   - Hi-Res / Lossy / Mixed Quality
   - Composer / Conductor / Performer — classical-music facets, surfaced only when the library has matching tags
   - Year / Decade — release-year facets, surfaced only when any track carries a year tag
+  - Genre / Year / Decade each include an "Unknown" tail bucket for albums whose tracks have no value for that tag — visible only when at least one such album exists
 - **Search** — class-aware: Album search returns album containers, Artist search returns artist containers, Track / global search ORs across `dc:title` / `upnp:album` / `upnp:artist` / `upnp:genre`. Recognizes `upnp:class derivedfrom`, `and` / `or` / parens, and the `upnp:artist[@role="..."]` attribute filter. **Fuzzy matching** folds accents, halfwidth / fullwidth Latin, and katakana ↔ hiragana so `Bjork` matches `Björk`, `Beatles` matches `Ｂｅａｔｌｅｓ`, and `みゆき` matches `ミユキ`.
 - **HTTP streaming with Range Request** — Strict support for all Range forms (`bytes=N-M`, `N-`, `-N` suffix). Gapless playback works.
 - **Album art** — Embedded artwork first, then folder images (`cover.*` / `folder.*` / `front.*` / etc., case-insensitive). On-demand extraction with a small in-memory cache.
