@@ -75,9 +75,21 @@ fn search_albums(
     start: usize,
     count: usize,
 ) -> Result<SearchResult> {
-    // For Album-class searches Linn always sends `dc:title contains "X"`,
-    // but we also accept upnp:album / upnp:artist / upnp:genre as forgiving
-    // fallbacks — `dc:title` against an album container means the album name.
+    // Linn's Album field always sends a single-leaf `dc:title contains "X"`.
+    // For that shape we switch to a relevance-ranked ORDER BY (exact album →
+    // partial album → artist's own album → compilation guest). Compound
+    // predicates (AND / OR, `upnp:album`, …) stay on the simple `album_norm`
+    // ascending path because the ranking doesn't generalize cleanly when
+    // multiple LIKE values are in play.
+    if let Predicate::Contains {
+        prop: Property::Title,
+        value,
+        role: _,
+    } = predicate
+    {
+        return search_albums_ranked(ctx, value, start, count);
+    }
+
     let where_clause = predicate_to_sql_albums(predicate);
     if where_clause.is_empty() {
         return Ok(empty());
@@ -110,6 +122,76 @@ fn search_albums(
         .query_map(rusqlite::params_from_iter(&list_params), |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
         })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let containers: Vec<Container> = rows
+        .into_iter()
+        .map(|(id, album, aa, tc)| album_container(ctx, id, &album, &aa, tc, "cat:al"))
+        .collect();
+    Ok(SearchResult {
+        didl: DidlOutput {
+            containers,
+            items: vec![],
+            nodes: vec![],
+        },
+        total_matches: total as usize,
+    })
+}
+
+/// Ranked Album-search for the single `dc:title contains "X"` case. The
+/// WHERE clause matches the same 3-way OR as `predicate_to_sql_albums`
+/// Title branch; ORDER BY layers a 4-bucket CASE on top so the most
+/// "obvious" hits come first:
+///
+/// | Rank | Match                                                |
+/// |------|------------------------------------------------------|
+/// | 0    | album name == X (exact, normalized)                  |
+/// | 1    | album name contains X                                |
+/// | 2    | effective_album_artist contains X (artist's own)     |
+/// | 3    | only a track-level `tracks.artist` carries X (comp)  |
+///
+/// Same `?1` (the `%X%` LIKE value) is referenced from both the WHERE
+/// clause and the CASE; `?2` is the exact-match value (no `%`).
+fn search_albums_ranked(
+    ctx: &BrowseContext,
+    value: &str,
+    start: usize,
+    count: usize,
+) -> Result<SearchResult> {
+    let norm = crate::normalize::for_search(value);
+    let like_pat = format!("%{}%", norm);
+
+    let where_sql = "album_norm LIKE ?1
+         OR effective_album_artist_norm LIKE ?1
+         OR EXISTS (SELECT 1 FROM tracks WHERE album_id = albums.id AND artist_norm LIKE ?1)";
+
+    let total: i64 = ctx.conn.query_row(
+        &format!("SELECT COUNT(*) FROM albums WHERE {where_sql}"),
+        rusqlite::params![&like_pat],
+        |r| r.get(0),
+    )?;
+
+    let sql = format!(
+        "SELECT id, album, effective_album_artist, track_count
+         FROM albums
+         WHERE {where_sql}
+         ORDER BY
+           CASE
+             WHEN album_norm = ?2 THEN 0
+             WHEN album_norm LIKE ?1 THEN 1
+             WHEN effective_album_artist_norm LIKE ?1 THEN 2
+             ELSE 3
+           END,
+           album_norm
+         LIMIT ?3 OFFSET ?4"
+    );
+    let mut stmt = ctx.conn.prepare_cached(&sql)?;
+    let rows: Vec<(i64, String, String, i64)> = stmt
+        .query_map(
+            rusqlite::params![&like_pat, &norm, count as i64, start as i64],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -821,6 +903,94 @@ mod tests {
         );
         let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
         assert_eq!(r.total_matches, 0);
+    }
+
+    #[test]
+    fn st1e_album_class_dc_title_orders_by_rank_buckets() {
+        // 4 albums covering each rank bucket of the ranked Album-search path:
+        //   rank 0 — album name == "Foo" exactly
+        //   rank 1 — album name contains "Foo" (partial)
+        //   rank 2 — album_artist contains "Foo" (artist's own record)
+        //   rank 3 — only a track-level artist carries "Foo" (compilation)
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::schema::migrate(&conn).unwrap();
+        let mk_album = |aa: &str, album: &str, comp: bool| -> i64 {
+            crate::db::albums::upsert(
+                &conn,
+                &crate::db::albums::AlbumKey {
+                    effective_album_artist: aa,
+                    album,
+                    compilation: comp,
+                },
+                Some(aa),
+                0,
+            )
+            .unwrap()
+        };
+        let exact_id = mk_album("Other Artist", "Foo", false);
+        let partial_id = mk_album("Other Artist", "Foo Extra", false);
+        let artist_id = mk_album("Foo Person", "Solo", false);
+        let comp_id = mk_album("Various Artists", "Mix Tape", true);
+        // Each album needs at least one track. Compilation track artist is "Foo".
+        for (album_id, path, track_artist) in [
+            (exact_id, "/m/exact.flac", "Other Artist"),
+            (partial_id, "/m/partial.flac", "Other Artist"),
+            (artist_id, "/m/artist.flac", "Foo Person"),
+            (comp_id, "/m/comp.flac", "Foo"),
+        ] {
+            crate::db::tracks::upsert(
+                &conn,
+                &crate::db::tracks::TrackRow {
+                    album_id,
+                    path,
+                    title: Some("t"),
+                    artist: Some(track_artist),
+                    genre: None,
+                    track_num: Some(1),
+                    disc_num: Some(1),
+                    duration_ms: Some(1),
+                    sample_rate: Some(44100),
+                    bit_depth: Some(16),
+                    channels: Some(2),
+                    bitrate: Some(1),
+                    codec: "flac",
+                    mime_type: "audio/flac",
+                    file_size: 1,
+                    added_at: 0,
+                    mtime: 0,
+                    composer: None,
+                    conductor: None,
+                    performer: None,
+                    year: None,
+                    rg_track_gain: None,
+                    rg_track_peak: None,
+                    rg_album_gain: None,
+                    rg_album_peak: None,
+                    artist_sort: None,
+                    album_artist_sort: None,
+                    album_sort: None,
+                    title_sort: None,
+                    composer_sort: None,
+                    original_year: None,
+                    mb_recording_id: None,
+                    mb_release_id: None,
+                    mb_release_group_id: None,
+                    mb_artist_id: None,
+                    mb_release_artist_id: None,
+                },
+            )
+            .unwrap();
+        }
+        crate::db::albums::recalc_counts(&conn).unwrap();
+
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.album" and dc:title contains "Foo""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 4);
+        let titles: Vec<&str> = r.didl.containers.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(titles, vec!["Foo", "Foo Extra", "Solo", "Mix Tape"]);
     }
 
     // ── Artist class (Linn's Artist field) ────────────────────────────────
