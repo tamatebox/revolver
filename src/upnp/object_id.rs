@@ -2,8 +2,9 @@
 //!
 //! - `0`           — root
 //! - `cat:aa/ar/al/gn/recent/played/random/hires/lossy/mixed/cm/cn/pf/yr/dec` — category (fixed)
-//! - `aa:<b64>` `ar:<b64>` `gn:<b64>` `cm:<b64>` `cn:<b64>` `pf:<b64>` —
-//!   name-based (URL-safe base64, no padding)
+//! - `aa:<b64>` `ar:<b64>` `at:<b64>` `gn:<b64>` `cm:<b64>` `cn:<b64>` `pf:<b64>` —
+//!   name-based (URL-safe base64, no padding). `at:` (#23) is the
+//!   "All tracks by X" flat shortcut shown under `aa:{X}` / `ar:{X}`.
 //! - `yr:<YYYY>` `dec:<YYYY>` — year / decade buckets (#2). Plain integer,
 //!   no base64 (digits are URL-safe). `dec:<YYYY>` is the first year of
 //!   the decade (e.g. `dec:1980` covers 1980-1989).
@@ -45,6 +46,11 @@ pub enum ObjectId {
     CatDec,
     AlbumArtist(String),
     Artist(String),
+    /// #23: "All tracks by X" flat virtual container. Listed as the first
+    /// child of `aa:{X}` / `ar:{X}` Browse when at least one track carries
+    /// `artist = X` after normalization. Browsing it returns track items
+    /// across all albums where X appears at the track level.
+    ArtistTracks(String),
     Genre(String),
     Composer(String),
     Conductor(String),
@@ -95,6 +101,8 @@ pub fn parse(s: &str) -> Option<ObjectId> {
                 decode_name(rest).map(ObjectId::AlbumArtist)
             } else if let Some(rest) = s.strip_prefix("ar:") {
                 decode_name(rest).map(ObjectId::Artist)
+            } else if let Some(rest) = s.strip_prefix("at:") {
+                decode_name(rest).map(ObjectId::ArtistTracks)
             } else if let Some(rest) = s.strip_prefix("gn:") {
                 // Empty payload → "Unknown Genre" sentinel. base64-encoded
                 // names are always ≥ 2 chars, so this can't collide.
@@ -165,6 +173,7 @@ pub fn encode(id: &ObjectId) -> String {
         ObjectId::CatDec => "cat:dec".to_string(),
         ObjectId::AlbumArtist(name) => format!("aa:{}", encode_name(name)),
         ObjectId::Artist(name) => format!("ar:{}", encode_name(name)),
+        ObjectId::ArtistTracks(name) => format!("at:{}", encode_name(name)),
         ObjectId::Genre(name) => format!("gn:{}", encode_name(name)),
         ObjectId::Composer(name) => format!("cm:{}", encode_name(name)),
         ObjectId::Conductor(name) => format!("cn:{}", encode_name(name)),
@@ -293,6 +302,7 @@ mod tests {
             for build in &[
                 ObjectId::AlbumArtist as fn(String) -> ObjectId,
                 ObjectId::Artist,
+                ObjectId::ArtistTracks,
                 ObjectId::Genre,
             ] {
                 let id = build(name.clone());
@@ -338,6 +348,7 @@ mod tests {
             ObjectId::AlbumArtist("Various Artists".to_string()),
             ObjectId::AlbumArtist("Björk Guðmundsdóttir".to_string()), // non-ASCII
             ObjectId::Artist("Miles Davis".to_string()),
+            ObjectId::ArtistTracks("Some Singer".to_string()),
             ObjectId::Genre("Jazz / Fusion".to_string()), // slash & space
             ObjectId::Album(42),
             ObjectId::Track(99),

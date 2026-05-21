@@ -27,33 +27,51 @@ pub fn album_metadata(ctx: &BrowseContext, album_id: i64) -> Result<DidlOutput> 
     }))
 }
 
-/// Under `aa:{name}`: album list filtered by Album Artist.
+/// Under `aa:{name}`: album list filtered by Album Artist. #23: if the
+/// artist also appears as a track-level `artist` on any track (i.e. there
+/// is something for `at:{X}` to surface), prepend an "All tracks (N)"
+/// synthetic container as the first child. Pagination accounts for that
+/// extra slot.
 pub fn albums_by_aa_children(
     ctx: &BrowseContext,
     aa_name: &str,
     start: usize,
     count: usize,
 ) -> Result<ChildrenResult> {
-    let total: i64 = ctx.conn.query_row(
+    let track_count = super::artist_tracks::track_count_for_artist(ctx, aa_name)?;
+    let has_shortcut = track_count > 0;
+
+    let album_total: i64 = ctx.conn.query_row(
         "SELECT COUNT(*) FROM albums WHERE effective_album_artist = ?1",
         params![aa_name],
         |r| r.get(0),
     )?;
-    let mut stmt = ctx.conn.prepare_cached(
-        "SELECT id, album, track_count FROM albums
-         WHERE effective_album_artist = ?1 ORDER BY album LIMIT ?2 OFFSET ?3",
-    )?;
-    let rows: Vec<(i64, String, i64)> = stmt
-        .query_map(params![aa_name, count as i64, start as i64], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
+    let total = album_total + if has_shortcut { 1 } else { 0 };
     let parent_id = object_id::encode(&ObjectId::AlbumArtist(aa_name.to_string()));
-    let containers = rows
-        .into_iter()
-        .map(|(id, album, tc)| album_container(ctx, id, &album, aa_name, tc, &parent_id))
-        .collect();
+
+    let mut containers: Vec<Container> = Vec::new();
+    let (album_offset, album_limit) =
+        shortcut_split(has_shortcut, start, count, &mut containers, || {
+            super::artist_tracks::build_at_container(aa_name, track_count, parent_id.clone())
+        });
+
+    if album_limit > 0 {
+        let mut stmt = ctx.conn.prepare_cached(
+            "SELECT id, album, track_count FROM albums
+             WHERE effective_album_artist = ?1 ORDER BY album LIMIT ?2 OFFSET ?3",
+        )?;
+        let rows: Vec<(i64, String, i64)> = stmt
+            .query_map(
+                params![aa_name, album_limit as i64, album_offset as i64],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?
+            .filter_map(|r| r.ok())
+            .collect();
+        for (id, album, tc) in rows {
+            containers.push(album_container(ctx, id, &album, aa_name, tc, &parent_id));
+        }
+    }
+
     Ok(ChildrenResult {
         didl: DidlOutput {
             containers,
@@ -64,7 +82,37 @@ pub fn albums_by_aa_children(
     })
 }
 
-/// Under `ar:{name}`: album list filtered by track artist.
+/// #23: shared shortcut-pagination helper. Decides the album-side
+/// `(offset, limit)` after accounting for the optional synthetic slot that
+/// occupies index 0. If the caller is on page 0 and the shortcut applies,
+/// invokes `build` to push the shortcut container into `out` and consumes
+/// one slot of `count`. On later pages the shortcut is skipped; the album
+/// offset slides back by 1 so the user sees a seamless list.
+fn shortcut_split<F: FnOnce() -> Container>(
+    has_shortcut: bool,
+    start: usize,
+    count: usize,
+    out: &mut Vec<Container>,
+    build: F,
+) -> (usize, usize) {
+    if !has_shortcut {
+        return (start, count);
+    }
+    if start == 0 {
+        if count == 0 {
+            return (0, 0);
+        }
+        out.push(build());
+        (0, count - 1)
+    } else {
+        (start - 1, count)
+    }
+}
+
+/// Under `ar:{name}`: album list filtered by track artist. #23: prepend
+/// `at:{X}` "All tracks (N)" shortcut when N > 0 (which is always true on
+/// this path by construction — we got here because at least one track has
+/// `artist = X`).
 ///
 /// perf §P1: built as a semi-join (`WHERE EXISTS`) instead of `DISTINCT JOIN`.
 /// Avoids intermediate row blowup for large artists like Various Artists
@@ -75,29 +123,43 @@ pub fn albums_by_artist_children(
     start: usize,
     count: usize,
 ) -> Result<ChildrenResult> {
-    let total: i64 = ctx.conn.query_row(
+    let track_count = super::artist_tracks::track_count_for_artist(ctx, artist_name)?;
+    let has_shortcut = track_count > 0;
+
+    let album_total: i64 = ctx.conn.query_row(
         "SELECT COUNT(*) FROM albums a
          WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id AND t.artist = ?1)",
         params![artist_name],
         |r| r.get(0),
     )?;
-    let mut stmt = ctx.conn.prepare_cached(
-        "SELECT a.id, a.album, a.effective_album_artist, a.track_count
-         FROM albums a
-         WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id AND t.artist = ?1)
-         ORDER BY a.album LIMIT ?2 OFFSET ?3",
-    )?;
-    let rows: Vec<(i64, String, String, i64)> = stmt
-        .query_map(params![artist_name, count as i64, start as i64], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
+    let total = album_total + if has_shortcut { 1 } else { 0 };
     let parent_id = object_id::encode(&ObjectId::Artist(artist_name.to_string()));
-    let containers = rows
-        .into_iter()
-        .map(|(id, album, aa, tc)| album_container(ctx, id, &album, &aa, tc, &parent_id))
-        .collect();
+
+    let mut containers: Vec<Container> = Vec::new();
+    let (album_offset, album_limit) =
+        shortcut_split(has_shortcut, start, count, &mut containers, || {
+            super::artist_tracks::build_at_container(artist_name, track_count, parent_id.clone())
+        });
+
+    if album_limit > 0 {
+        let mut stmt = ctx.conn.prepare_cached(
+            "SELECT a.id, a.album, a.effective_album_artist, a.track_count
+             FROM albums a
+             WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id AND t.artist = ?1)
+             ORDER BY a.album LIMIT ?2 OFFSET ?3",
+        )?;
+        let rows: Vec<(i64, String, String, i64)> = stmt
+            .query_map(
+                params![artist_name, album_limit as i64, album_offset as i64],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )?
+            .filter_map(|r| r.ok())
+            .collect();
+        for (id, album, aa, tc) in rows {
+            containers.push(album_container(ctx, id, &album, &aa, tc, &parent_id));
+        }
+    }
+
     Ok(ChildrenResult {
         didl: DidlOutput {
             containers,

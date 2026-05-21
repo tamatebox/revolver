@@ -15,6 +15,7 @@ use crate::upnp::didl::{Container, DidlNode};
 use crate::upnp::object_id::ObjectId;
 
 pub mod albums;
+pub mod artist_tracks;
 pub mod categories;
 pub mod played;
 pub mod quality;
@@ -94,6 +95,7 @@ pub fn browse_metadata(ctx: &BrowseContext, id: &ObjectId) -> Result<DidlOutput>
         ObjectId::CatDec => Ok(single(plain_cat("cat:dec", "0", "Decade"))),
         ObjectId::AlbumArtist(name) => Ok(single(person_container(id, "cat:aa", name))),
         ObjectId::Artist(name) => Ok(single(person_container(id, "cat:ar", name))),
+        ObjectId::ArtistTracks(name) => artist_tracks::artist_tracks_metadata(ctx, name),
         ObjectId::Genre(name) => Ok(single(genre_container(id, "cat:gn", name))),
         ObjectId::Composer(name) => Ok(single(person_container(id, "cat:cm", name))),
         ObjectId::Conductor(name) => Ok(single(person_container(id, "cat:cn", name))),
@@ -143,6 +145,9 @@ pub fn browse_children(
         ObjectId::CatDec => categories::decades_children(ctx, start, count),
         ObjectId::AlbumArtist(name) => albums::albums_by_aa_children(ctx, name, start, count),
         ObjectId::Artist(name) => albums::albums_by_artist_children(ctx, name, start, count),
+        ObjectId::ArtistTracks(name) => {
+            artist_tracks::artist_tracks_children(ctx, name, start, count)
+        }
         ObjectId::Genre(name) => albums::albums_by_genre_children(ctx, name, start, count),
         ObjectId::Composer(name) => albums::albums_by_composer_children(ctx, name, start, count),
         ObjectId::Conductor(name) => albums::albums_by_conductor_children(ctx, name, start, count),
@@ -399,6 +404,9 @@ mod tests {
 
     #[test]
     fn br3_aa_name_children_returns_artist_albums() {
+        // #23: an `at:{X}` synthetic container precedes the album list when
+        // the artist has track-level rows. Beatles has 2 tracks tagged with
+        // artist=The Beatles, so total = 1 album + 1 shortcut.
         let conn = seed_db();
         let result = browse_children(
             &ctx(&conn),
@@ -407,10 +415,64 @@ mod tests {
             100,
         )
         .unwrap();
-        assert_eq!(result.total_matches, 1);
+        assert_eq!(result.total_matches, 2);
+        assert_eq!(result.didl.containers.len(), 2);
+        assert!(result.didl.containers[0].id.starts_with("at:"));
+        assert_eq!(result.didl.containers[0].title, "All tracks (2)");
+        assert_eq!(result.didl.containers[1].title, "Abbey Road");
+        assert_eq!(result.didl.containers[1].child_count, Some(2));
+    }
+
+    #[test]
+    fn br3b_ar_name_children_also_prepends_at_shortcut() {
+        // ar:{Some Singer} → 1 album (Hits) preceded by `at:{Some Singer}`.
+        let conn = seed_db();
+        let result = browse_children(
+            &ctx(&conn),
+            &ObjectId::Artist("Some Singer".to_string()),
+            0,
+            100,
+        )
+        .unwrap();
+        assert_eq!(result.total_matches, 2);
+        assert!(result.didl.containers[0].id.starts_with("at:"));
+        assert_eq!(result.didl.containers[0].title, "All tracks (1)");
+        assert_eq!(result.didl.containers[1].title, "Hits");
+    }
+
+    #[test]
+    fn br3c_aa_name_pagination_start_one_skips_shortcut() {
+        // start=1 means the shortcut is treated as the consumed slot 0; the
+        // album page begins at the same offset it would have without the
+        // shortcut. total_matches still reflects the synthetic slot.
+        let conn = seed_db();
+        let result = browse_children(
+            &ctx(&conn),
+            &ObjectId::AlbumArtist("The Beatles".to_string()),
+            1,
+            100,
+        )
+        .unwrap();
+        assert_eq!(result.total_matches, 2);
         assert_eq!(result.didl.containers.len(), 1);
         assert_eq!(result.didl.containers[0].title, "Abbey Road");
-        assert_eq!(result.didl.containers[0].child_count, Some(2));
+    }
+
+    #[test]
+    fn br3d_aa_name_count_one_returns_shortcut_only() {
+        // Tight count budget at the head of the list shows just the
+        // shortcut; the album is left for the next page.
+        let conn = seed_db();
+        let result = browse_children(
+            &ctx(&conn),
+            &ObjectId::AlbumArtist("The Beatles".to_string()),
+            0,
+            1,
+        )
+        .unwrap();
+        assert_eq!(result.total_matches, 2);
+        assert_eq!(result.didl.containers.len(), 1);
+        assert!(result.didl.containers[0].id.starts_with("at:"));
     }
 
     #[test]
