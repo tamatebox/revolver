@@ -1,4 +1,4 @@
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
@@ -51,6 +51,29 @@ pub async fn icon_120() -> Response {
         icon::ICON_120_PNG,
     )
         .into_response()
+}
+
+/// `GET /icon/512.png` — extra-large icon for retina-class control points,
+/// also advertised in the Device Description `<iconList>`.
+pub async fn icon_512() -> Response {
+    (
+        StatusCode::OK,
+        [("content-type", icon::MIME)],
+        icon::ICON_512_PNG,
+    )
+        .into_response()
+}
+
+/// `GET /icon/cat/{slug}` — per-category icon for root facets (#24).
+/// Returns the embedded PNG bytes with `Content-Type: image/png`, or 404 for
+/// unknown slugs. The URL deliberately omits the `.png` extension because
+/// axum disallows mixing a path parameter with literal text inside one
+/// segment; control points key off the response Content-Type, not the URL.
+pub async fn icon_category(Path(slug): Path<String>) -> Response {
+    match icon::category_icon(&slug) {
+        Some(bytes) => (StatusCode::OK, [("content-type", icon::MIME)], bytes).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 #[cfg(test)]

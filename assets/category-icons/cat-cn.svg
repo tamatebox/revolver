@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- revolver — category icon for `cat:cn` (Conductor). Baton with rounded grip + orange spark at the tip. No motion arc — keep the silhouette clean. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" shape-rendering="geometricPrecision">
+  <rect x="2" y="2" width="116" height="116" rx="24" fill="#ede4d0"/>
+  <rect x="2" y="2" width="116" height="116" rx="24" fill="none" stroke="#c8bea4" stroke-width="0.8"/>
+
+  <!-- Baton: rounded grip (lower-left) + tapered shaft going up-right -->
+  <g fill="#161616">
+    <!-- Grip bulb -->
+    <circle cx="28" cy="92" r="12"/>
+    <!-- Shaft: parallelogram from grip to the tip (tapers slightly to give a "conducting stick" feel) -->
+    <path d="M 36 86
+             L 96 22
+             L 100 26
+             L 40 90 Z"/>
+  </g>
+
+  <!-- Orange "spark" at the baton tip -->
+  <circle cx="98" cy="24" r="6" fill="#d6651f"/>
+</svg>

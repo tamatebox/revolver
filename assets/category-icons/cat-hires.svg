@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- revolver — category icon for `cat:hires` (Hi-Res Albums). Lightning bolt. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" shape-rendering="geometricPrecision">
+  <rect x="2" y="2" width="116" height="116" rx="24" fill="#ede4d0"/>
+  <rect x="2" y="2" width="116" height="116" rx="24" fill="none" stroke="#c8bea4" stroke-width="0.8"/>
+
+  <!-- Lightning bolt: classic zigzag, top-right to bottom-left -->
+  <path d="M 70 14
+           L 42 62
+           L 60 62
+           L 50 106
+           L 82 50
+           L 64 50
+           L 76 14 Z"
+        fill="#161616"/>
+
+  <!-- Orange highlight on the upper segment edge -->
+  <path d="M 70 14
+           L 42 62
+           L 50 62"
+        fill="none" stroke="#d6651f" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

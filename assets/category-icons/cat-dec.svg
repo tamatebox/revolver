@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- revolver — category icon for `cat:dec` (Decade). Calendar base + ×10 badge. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" shape-rendering="geometricPrecision">
+  <rect x="2" y="2" width="116" height="116" rx="24" fill="#ede4d0"/>
+  <rect x="2" y="2" width="116" height="116" rx="24" fill="none" stroke="#c8bea4" stroke-width="0.8"/>
+
+  <!-- Calendar body (smaller than cat:yr to leave room for the decade badge) -->
+  <rect x="18" y="32" width="64" height="58" rx="5" fill="#161616"/>
+  <rect x="24" y="42" width="52" height="42" rx="3" fill="#ede4d0"/>
+  <rect x="30" y="26" width="5" height="12" rx="2" fill="#161616"/>
+  <rect x="64" y="26" width="5" height="12" rx="2" fill="#161616"/>
+
+  <!-- Date dots (2x3) -->
+  <g fill="#161616">
+    <circle cx="36" cy="54" r="2.5"/>
+    <circle cx="50" cy="54" r="2.5"/>
+    <circle cx="64" cy="54" r="2.5"/>
+    <circle cx="36" cy="66" r="2.5"/>
+    <circle cx="50" cy="66" r="2.5"/>
+    <circle cx="64" cy="66" r="2.5"/>
+    <circle cx="36" cy="78" r="2.5"/>
+    <circle cx="50" cy="78" r="2.5"/>
+    <circle cx="64" cy="78" r="2.5"/>
+  </g>
+
+  <!-- "10" badge: orange circle bottom-right with "10" -->
+  <circle cx="88" cy="86" r="18" fill="#d6651f"/>
+  <text x="88" y="92" font-family="-apple-system, Helvetica, Arial, sans-serif"
+        font-size="20" font-weight="900" text-anchor="middle" fill="#161616">10</text>
+</svg>

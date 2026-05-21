@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- revolver — category icon for `cat:lossy` (Lossy Albums). Waveform bars with the right half faded (data loss) — orange accent on the boundary bar. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" shape-rendering="geometricPrecision">
+  <rect x="2" y="2" width="116" height="116" rx="24" fill="#ede4d0"/>
+  <rect x="2" y="2" width="116" height="116" rx="24" fill="none" stroke="#c8bea4" stroke-width="0.8"/>
+
+  <!-- Full-quality bars (left half) — solid black -->
+  <g fill="#161616">
+    <rect x="14" y="36" width="8" height="48" rx="2"/>
+    <rect x="26" y="28" width="8" height="64" rx="2"/>
+    <rect x="38" y="42" width="8" height="36" rx="2"/>
+    <rect x="50" y="32" width="8" height="56" rx="2"/>
+  </g>
+
+  <!-- Boundary bar — orange accent marking where the loss starts -->
+  <rect x="62" y="44" width="8" height="32" rx="2" fill="#d6651f"/>
+
+  <!-- Faded bars (right half) — same black at low opacity to show "lost" data -->
+  <g fill="#161616" opacity="0.28">
+    <rect x="74" y="50" width="8" height="20" rx="2"/>
+    <rect x="86" y="54" width="8" height="12" rx="2"/>
+    <rect x="98" y="56" width="8" height="8" rx="2"/>
+  </g>
+</svg>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- revolver — category icon for `cat:al` (Album). Album sleeve silhouette with corner notch. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" shape-rendering="geometricPrecision">
+  <rect x="2" y="2" width="116" height="116" rx="24" fill="#ede4d0"/>
+  <rect x="2" y="2" width="116" height="116" rx="24" fill="none" stroke="#c8bea4" stroke-width="0.8"/>
+
+  <!-- Square album sleeve, slightly inset -->
+  <rect x="24" y="24" width="72" height="72" rx="4" fill="#161616"/>
+  <!-- Inner offset rectangle (gives a "frame" look) -->
+  <rect x="32" y="32" width="56" height="56" rx="2" fill="none" stroke="#ede4d0" stroke-width="2"/>
+  <!-- Concentric circles inside (record visible through sleeve) -->
+  <circle cx="60" cy="60" r="20" fill="none" stroke="#ede4d0" stroke-width="2"/>
+  <circle cx="60" cy="60" r="14" fill="none" stroke="#ede4d0" stroke-width="1.5"/>
+  <!-- Orange center label -->
+  <circle cx="60" cy="60" r="6" fill="#d6651f"/>
+</svg>

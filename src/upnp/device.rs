@@ -28,6 +28,13 @@ const TEMPLATE: &str = r#"<?xml version="1.0"?>
         <depth>32</depth>
         <url>/icon/120.png</url>
       </icon>
+      <icon>
+        <mimetype>image/png</mimetype>
+        <width>512</width>
+        <height>512</height>
+        <depth>32</depth>
+        <url>/icon/512.png</url>
+      </icon>
     </iconList>
     <serviceList>
       <service>
@@ -86,6 +93,7 @@ mod tests {
         assert!(xml.contains("<iconList>"));
         assert!(xml.contains("<url>/icon/48.png</url>"));
         assert!(xml.contains("<url>/icon/120.png</url>"));
+        assert!(xml.contains("<url>/icon/512.png</url>"));
         assert!(xml.contains("<mimetype>image/png</mimetype>"));
     }
 

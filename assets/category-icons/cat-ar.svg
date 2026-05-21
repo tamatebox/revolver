@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- revolver — category icon for `cat:ar` (Artist). Two coherent person silhouettes where head and shoulders meet, front person overlapping the rear. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" shape-rendering="geometricPrecision">
+  <rect x="2" y="2" width="116" height="116" rx="24" fill="#ede4d0"/>
+  <rect x="2" y="2" width="116" height="116" rx="24" fill="none" stroke="#c8bea4" stroke-width="0.8"/>
+
+  <!-- Rear person — drawn first; head and shoulders are sized so they touch (no gap). -->
+  <g fill="#161616">
+    <circle cx="78" cy="48" r="13"/>
+    <!-- Shoulder arch peaks at y≈60 so the head (bottom at y=61) sits on it -->
+    <path d="M 52 110
+             C 52 60, 104 60, 104 110 Z"/>
+  </g>
+
+  <!-- Cream halo cleanly cuts the rear silhouette where the front person sits -->
+  <g fill="#ede4d0">
+    <circle cx="46" cy="56" r="17"/>
+    <path d="M 14 110
+             C 14 70, 78 70, 78 110 Z"/>
+  </g>
+
+  <!-- Front person — larger, lower-left, head sits flush on the shoulder arch. -->
+  <g fill="#161616">
+    <circle cx="46" cy="56" r="14"/>
+    <!-- Shoulder arch peaks at y≈70 so the head (bottom at y=70) sits on it -->
+    <path d="M 18 110
+             C 18 70, 74 70, 74 110 Z"/>
+  </g>
+
+  <!-- Orange shirt-button accent, placed clearly on the front person's torso -->
+  <circle cx="46" cy="88" r="3.5" fill="#d6651f"/>
+</svg>

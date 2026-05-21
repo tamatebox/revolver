@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- revolver — category icon for `cat:recent` (Recently Added). Clock face. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" shape-rendering="geometricPrecision">
+  <rect x="2" y="2" width="116" height="116" rx="24" fill="#ede4d0"/>
+  <rect x="2" y="2" width="116" height="116" rx="24" fill="none" stroke="#c8bea4" stroke-width="0.8"/>
+
+  <!-- Clock face -->
+  <circle cx="60" cy="60" r="34" fill="none" stroke="#161616" stroke-width="6"/>
+  <!-- Hour marks at 12 / 3 / 6 / 9 -->
+  <rect x="58" y="24" width="4" height="8" fill="#161616"/>
+  <rect x="88" y="58" width="8" height="4" fill="#161616"/>
+  <rect x="58" y="88" width="4" height="8" fill="#161616"/>
+  <rect x="24" y="58" width="8" height="4" fill="#161616"/>
+  <!-- Hands: hour to 11, minute to 2 (the universal "fresh / time" pose) -->
+  <line x1="60" y1="60" x2="48" y2="42" stroke="#161616" stroke-width="5" stroke-linecap="round"/>
+  <line x1="60" y1="60" x2="76" y2="50" stroke="#161616" stroke-width="4" stroke-linecap="round"/>
+  <!-- Orange pivot -->
+  <circle cx="60" cy="60" r="4" fill="#d6651f"/>
+</svg>

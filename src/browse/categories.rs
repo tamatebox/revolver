@@ -43,35 +43,32 @@ pub fn root_children(ctx: &BrowseContext) -> ChildrenResult {
 /// Builds one root-level facet container. Returns `None` if the ID is unknown
 /// or the facet is currently disabled (a classical / year column with no
 /// populated rows).
+#[rustfmt::skip]
 fn build_root_facet(ctx: &BrowseContext, id: &str) -> Option<Container> {
+    // #2: cat:yr / cat:dec self-hide when zero tracks carry a release year,
+    // and the classical facets (cm / cn / pf) self-hide on libraries with
+    // no rows in the corresponding column (#9).
     match id {
-        "cat:aa" => Some(plain_cat("cat:aa", "0", "Album Artist")),
-        "cat:ar" => Some(plain_cat("cat:ar", "0", "Artist")),
-        "cat:al" => Some(plain_cat("cat:al", "0", "Album")),
-        "cat:gn" => Some(plain_cat("cat:gn", "0", "Genre")),
-        "cat:recent" => Some(plain_cat("cat:recent", "0", "Recently Added")),
-        "cat:played" => Some(plain_cat("cat:played", "0", "Recently Played")),
-        "cat:random" => Some(plain_cat("cat:random", "0", "Random Albums")),
-        "cat:hires" => Some(plain_cat("cat:hires", "0", "Hi-Res Albums")),
-        "cat:lossy" => Some(plain_cat("cat:lossy", "0", "Lossy Albums")),
-        "cat:mixed" => Some(plain_cat("cat:mixed", "0", "Mixed Quality")),
-        "cat:cm" if facet_has_any(ctx, "composer").unwrap_or(false) => {
-            Some(plain_cat("cat:cm", "0", "Composer"))
-        }
-        "cat:cn" if facet_has_any(ctx, "conductor").unwrap_or(false) => {
-            Some(plain_cat("cat:cn", "0", "Conductor"))
-        }
-        "cat:pf" if facet_has_any(ctx, "performer").unwrap_or(false) => {
-            Some(plain_cat("cat:pf", "0", "Performer"))
-        }
-        // #2: Year / Decade self-hide when zero tracks carry a release year.
-        // Libraries with no DATE / YEAR tag set never see these in the root.
-        "cat:yr" if facet_has_any(ctx, "year").unwrap_or(false) => {
-            Some(plain_cat("cat:yr", "0", "Year"))
-        }
-        "cat:dec" if facet_has_any(ctx, "year").unwrap_or(false) => {
-            Some(plain_cat("cat:dec", "0", "Decade"))
-        }
+        "cat:aa"     => Some(cat_with_icon(ctx, "cat:aa",     "0", "Album Artist",    "aa")),
+        "cat:ar"     => Some(cat_with_icon(ctx, "cat:ar",     "0", "Artist",          "ar")),
+        "cat:al"     => Some(cat_with_icon(ctx, "cat:al",     "0", "Album",           "al")),
+        "cat:gn"     => Some(cat_with_icon(ctx, "cat:gn",     "0", "Genre",           "gn")),
+        "cat:recent" => Some(cat_with_icon(ctx, "cat:recent", "0", "Recently Added",  "recent")),
+        "cat:played" => Some(cat_with_icon(ctx, "cat:played", "0", "Recently Played", "played")),
+        "cat:random" => Some(cat_with_icon(ctx, "cat:random", "0", "Random Albums",   "random")),
+        "cat:hires"  => Some(cat_with_icon(ctx, "cat:hires",  "0", "Hi-Res Albums",   "hires")),
+        "cat:lossy"  => Some(cat_with_icon(ctx, "cat:lossy",  "0", "Lossy Albums",    "lossy")),
+        "cat:mixed"  => Some(cat_with_icon(ctx, "cat:mixed",  "0", "Mixed Quality",   "mixed")),
+        "cat:cm"  if facet_has_any(ctx, "composer" ).unwrap_or(false)
+            => Some(cat_with_icon(ctx, "cat:cm",  "0", "Composer",  "cm")),
+        "cat:cn"  if facet_has_any(ctx, "conductor").unwrap_or(false)
+            => Some(cat_with_icon(ctx, "cat:cn",  "0", "Conductor", "cn")),
+        "cat:pf"  if facet_has_any(ctx, "performer").unwrap_or(false)
+            => Some(cat_with_icon(ctx, "cat:pf",  "0", "Performer", "pf")),
+        "cat:yr"  if facet_has_any(ctx, "year"     ).unwrap_or(false)
+            => Some(cat_with_icon(ctx, "cat:yr",  "0", "Year",      "yr")),
+        "cat:dec" if facet_has_any(ctx, "year"     ).unwrap_or(false)
+            => Some(cat_with_icon(ctx, "cat:dec", "0", "Decade",    "dec")),
         _ => None,
     }
 }
@@ -475,6 +472,23 @@ pub(crate) fn plain_cat(id: &str, parent: &str, title: &str) -> Container {
     }
 }
 
+/// Root facet container with a bespoke icon (#24). `icon_slug` selects the
+/// `/icon/cat-{slug}.png` served by [`crate::http::upnp`]; the URL is
+/// reconstructed by trimming the trailing `/art` segment off `art_base_url`
+/// to reach the host base.
+fn cat_with_icon(
+    ctx: &BrowseContext,
+    id: &str,
+    parent: &str,
+    title: &str,
+    icon_slug: &str,
+) -> Container {
+    let mut c = plain_cat(id, parent, title);
+    let host_base = ctx.art_base_url.trim_end_matches("/art");
+    c.album_art_uri = Some(format!("{host_base}/icon/cat/{icon_slug}"));
+    c
+}
+
 pub(crate) fn person_container(id: &ObjectId, parent: &str, name: &str) -> Container {
     Container {
         id: object_id::encode(id),
@@ -547,6 +561,46 @@ mod tests {
         assert!(ids.contains(&"cat:hires"));
         assert!(ids.contains(&"cat:lossy"));
         assert!(ids.contains(&"cat:mixed"));
+    }
+
+    #[test]
+    fn cr2_root_facets_carry_per_facet_icon_album_art_uri() {
+        // #24: every surfaced cat:* root facet advertises an
+        // `/icon/cat-{slug}.png` URL whose slug matches a registered entry in
+        // `crate::upnp::icon::CATEGORY_ICONS`. URLs are reconstructed against
+        // the same host as `art_base_url` (the `/art` segment is stripped).
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::migrate(&conn).unwrap();
+        let rs = RandomState::new();
+        let s = BrowseSettings::default();
+        let r = root_children(&ctx_with(&conn, &rs, &s));
+        for c in &r.didl.containers {
+            let uri = c
+                .album_art_uri
+                .as_deref()
+                .unwrap_or_else(|| panic!("{} must carry an albumArtURI", c.id));
+            let slug = uri
+                .strip_prefix("http://x/icon/cat/")
+                .unwrap_or_else(|| panic!("{} URL has unexpected shape: {uri}", c.id));
+            assert!(
+                crate::upnp::icon::category_icon(slug).is_some(),
+                "{} references slug {slug} but it is not in CATEGORY_ICONS",
+                c.id
+            );
+        }
+        // Spot-check a couple of slugs we know must be present under defaults.
+        let gn = r.didl.containers.iter().find(|c| c.id == "cat:gn").unwrap();
+        assert_eq!(gn.album_art_uri.as_deref(), Some("http://x/icon/cat/gn"));
+        let recent = r
+            .didl
+            .containers
+            .iter()
+            .find(|c| c.id == "cat:recent")
+            .unwrap();
+        assert_eq!(
+            recent.album_art_uri.as_deref(),
+            Some("http://x/icon/cat/recent")
+        );
     }
 
     #[test]

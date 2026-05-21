@@ -71,6 +71,8 @@ pub fn router(state: AppState) -> Router {
         .route("/scpd/cm.xml", get(upnp::scpd_cm))
         .route("/icon/48.png", get(upnp::icon_48))
         .route("/icon/120.png", get(upnp::icon_120))
+        .route("/icon/512.png", get(upnp::icon_512))
+        .route("/icon/cat/{slug}", get(upnp::icon_category))
         .route("/event/cd", any(gena::event_cd))
         .route("/event/cm", any(gena::event_cm))
         .route("/stream/{track_id}", get(stream::stream))

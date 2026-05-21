@@ -5,7 +5,7 @@
   center label. Stays legible on light and dark backgrounds because the tile
   itself carries the silhouette. Original geometric design.
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" shape-rendering="geometricPrecision">
   <rect x="2" y="2" width="116" height="116" rx="24" fill="#ede4d0"/>
   <rect x="2" y="2" width="116" height="116" rx="24" fill="none" stroke="#c8bea4" stroke-width="0.8"/>
   <circle cx="60" cy="60" r="44" fill="#161616"/>
