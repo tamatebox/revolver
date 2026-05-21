@@ -263,6 +263,9 @@ fn run_inner(
                     file_size: t.tags.file_size,
                     added_at,
                     mtime: to_unix_secs(t.enumerated.fs_mtime),
+                    composer: t.tags.composer.as_deref(),
+                    conductor: t.tags.conductor.as_deref(),
+                    performer: t.tags.performer.as_deref(),
                 },
             )?;
             match outcome {

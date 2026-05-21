@@ -28,6 +28,18 @@ pub fn root_children(ctx: &BrowseContext) -> ChildrenResult {
         containers.push(plain_cat("cat:lossy", "0", "Lossy Albums"));
         containers.push(plain_cat("cat:mixed", "0", "Mixed Quality"));
     }
+    // #9: classical facets — surface only when the library has any populated rows.
+    // (A library with zero composers/conductors/performers is the common case for
+    // non-classical collections; hiding empty categories keeps the root clean.)
+    if facet_has_any(ctx, "composer").unwrap_or(false) {
+        containers.push(plain_cat("cat:cm", "0", "Composer"));
+    }
+    if facet_has_any(ctx, "conductor").unwrap_or(false) {
+        containers.push(plain_cat("cat:cn", "0", "Conductor"));
+    }
+    if facet_has_any(ctx, "performer").unwrap_or(false) {
+        containers.push(plain_cat("cat:pf", "0", "Performer"));
+    }
     let total = containers.len();
     ChildrenResult {
         didl: DidlOutput {
@@ -129,6 +141,96 @@ pub fn albums_children(ctx: &BrowseContext, start: usize, count: usize) -> Resul
         },
         total_matches: total as usize,
     })
+}
+
+/// #9: Under `cat:cm` / `cat:cn` / `cat:pf` — DISTINCT composer / conductor /
+/// performer. Mirrors `artists_children`.
+pub fn composers_children(
+    ctx: &BrowseContext,
+    start: usize,
+    count: usize,
+) -> Result<ChildrenResult> {
+    facet_children(ctx, "composer", "cat:cm", start, count, |name| {
+        person_container(&ObjectId::Composer(name.clone()), "cat:cm", &name)
+    })
+}
+
+pub fn conductors_children(
+    ctx: &BrowseContext,
+    start: usize,
+    count: usize,
+) -> Result<ChildrenResult> {
+    facet_children(ctx, "conductor", "cat:cn", start, count, |name| {
+        person_container(&ObjectId::Conductor(name.clone()), "cat:cn", &name)
+    })
+}
+
+pub fn performers_children(
+    ctx: &BrowseContext,
+    start: usize,
+    count: usize,
+) -> Result<ChildrenResult> {
+    facet_children(ctx, "performer", "cat:pf", start, count, |name| {
+        person_container(&ObjectId::Performer(name.clone()), "cat:pf", &name)
+    })
+}
+
+/// Generic "DISTINCT $column FROM tracks WHERE $column IS NOT NULL" enumerator
+/// for the #9 classical facets. `column` must be a literal identifier (caller
+/// passes a hard-coded string; never user input — guards against SQL injection).
+fn facet_children(
+    ctx: &BrowseContext,
+    column: &'static str,
+    _parent_id: &'static str,
+    start: usize,
+    count: usize,
+    make: impl Fn(String) -> Container,
+) -> Result<ChildrenResult> {
+    let total: i64 = ctx.conn.query_row(
+        &format!(
+            "SELECT COUNT(DISTINCT {col}) FROM tracks
+             WHERE {col} IS NOT NULL AND {col} != ''",
+            col = column
+        ),
+        [],
+        |r| r.get(0),
+    )?;
+    let mut stmt = ctx.conn.prepare_cached(&format!(
+        "SELECT DISTINCT {col} FROM tracks
+         WHERE {col} IS NOT NULL AND {col} != ''
+         ORDER BY {col} COLLATE NOCASE LIMIT ?1 OFFSET ?2",
+        col = column
+    ))?;
+    let names: Vec<String> = stmt
+        .query_map(params![count as i64, start as i64], |r| r.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    let containers: Vec<Container> = names.into_iter().map(make).collect();
+    Ok(ChildrenResult {
+        didl: DidlOutput {
+            containers,
+            items: vec![],
+            nodes: vec![],
+        },
+        total_matches: total as usize,
+    })
+}
+
+/// Returns `true` if at least one row has `tracks.{column}` populated.
+/// Used by `root_children` to hide empty classical facets from non-classical
+/// libraries. Same SQL-injection guard as `facet_children`: `column` is a
+/// caller-controlled literal.
+fn facet_has_any(ctx: &BrowseContext, column: &'static str) -> Result<bool> {
+    let any: i64 = ctx.conn.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM tracks
+             WHERE {col} IS NOT NULL AND {col} != '')",
+            col = column
+        ),
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(any != 0)
 }
 
 /// Under `cat:gn`: DISTINCT track genre.

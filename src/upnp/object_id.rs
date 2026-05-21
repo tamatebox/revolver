@@ -1,9 +1,11 @@
 //! UPnP ObjectID encode / decode (SPEC §6.1).
 //!
 //! - `0`           — root
-//! - `cat:aa/ar/al/gn/recent/played/random/hires/lossy/mixed` — category (fixed)
-//! - `aa:<b64>` `ar:<b64>` `gn:<b64>` — name-based (URL-safe base64, no padding)
+//! - `cat:aa/ar/al/gn/recent/played/random/hires/lossy/mixed/cm/cn/pf` — category (fixed)
+//! - `aa:<b64>` `ar:<b64>` `gn:<b64>` `cm:<b64>` `cn:<b64>` `pf:<b64>` —
+//!   name-based (URL-safe base64, no padding)
 //! - `alb:<id>` `trk:<id>` — albums.id / tracks.id
+//! - `disc:<album_id>:<disc>` — multi-disc divider container (#17)
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -21,9 +23,18 @@ pub enum ObjectId {
     CatHires,
     CatLossy,
     CatMixed,
+    /// #9: classical facet — composers.
+    CatCm,
+    /// #9: classical facet — conductors.
+    CatCn,
+    /// #9: classical facet — performers (orchestra / ensemble).
+    CatPf,
     AlbumArtist(String),
     Artist(String),
     Genre(String),
+    Composer(String),
+    Conductor(String),
+    Performer(String),
     Album(i64),
     Track(i64),
     /// Disc-divider container injected into a multi-disc album's child list.
@@ -48,6 +59,9 @@ pub fn parse(s: &str) -> Option<ObjectId> {
         "cat:hires" => Some(ObjectId::CatHires),
         "cat:lossy" => Some(ObjectId::CatLossy),
         "cat:mixed" => Some(ObjectId::CatMixed),
+        "cat:cm" => Some(ObjectId::CatCm),
+        "cat:cn" => Some(ObjectId::CatCn),
+        "cat:pf" => Some(ObjectId::CatPf),
         _ => {
             if let Some(rest) = s.strip_prefix("aa:") {
                 decode_name(rest).map(ObjectId::AlbumArtist)
@@ -55,6 +69,12 @@ pub fn parse(s: &str) -> Option<ObjectId> {
                 decode_name(rest).map(ObjectId::Artist)
             } else if let Some(rest) = s.strip_prefix("gn:") {
                 decode_name(rest).map(ObjectId::Genre)
+            } else if let Some(rest) = s.strip_prefix("cm:") {
+                decode_name(rest).map(ObjectId::Composer)
+            } else if let Some(rest) = s.strip_prefix("cn:") {
+                decode_name(rest).map(ObjectId::Conductor)
+            } else if let Some(rest) = s.strip_prefix("pf:") {
+                decode_name(rest).map(ObjectId::Performer)
             } else if let Some(rest) = s.strip_prefix("alb:") {
                 rest.parse().ok().map(ObjectId::Album)
             } else if let Some(rest) = s.strip_prefix("trk:") {
@@ -85,9 +105,15 @@ pub fn encode(id: &ObjectId) -> String {
         ObjectId::CatHires => "cat:hires".to_string(),
         ObjectId::CatLossy => "cat:lossy".to_string(),
         ObjectId::CatMixed => "cat:mixed".to_string(),
+        ObjectId::CatCm => "cat:cm".to_string(),
+        ObjectId::CatCn => "cat:cn".to_string(),
+        ObjectId::CatPf => "cat:pf".to_string(),
         ObjectId::AlbumArtist(name) => format!("aa:{}", encode_name(name)),
         ObjectId::Artist(name) => format!("ar:{}", encode_name(name)),
         ObjectId::Genre(name) => format!("gn:{}", encode_name(name)),
+        ObjectId::Composer(name) => format!("cm:{}", encode_name(name)),
+        ObjectId::Conductor(name) => format!("cn:{}", encode_name(name)),
+        ObjectId::Performer(name) => format!("pf:{}", encode_name(name)),
         ObjectId::Album(id) => format!("alb:{}", id),
         ObjectId::Track(id) => format!("trk:{}", id),
         ObjectId::Disc { album_id, disc } => format!("disc:{}:{}", album_id, disc),
@@ -225,6 +251,12 @@ mod tests {
                 album_id: 42,
                 disc: 2,
             },
+            ObjectId::CatCm,
+            ObjectId::CatCn,
+            ObjectId::CatPf,
+            ObjectId::Composer("J.S. Bach".to_string()),
+            ObjectId::Conductor("Karajan".to_string()),
+            ObjectId::Performer("Berlin Philharmonic".to_string()),
         ];
         for case in cases {
             let encoded = encode(&case);

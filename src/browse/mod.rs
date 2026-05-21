@@ -85,9 +85,15 @@ pub fn browse_metadata(ctx: &BrowseContext, id: &ObjectId) -> Result<DidlOutput>
         ObjectId::CatHires => Ok(single(plain_cat("cat:hires", "0", "Hi-Res Albums"))),
         ObjectId::CatLossy => Ok(single(plain_cat("cat:lossy", "0", "Lossy Albums"))),
         ObjectId::CatMixed => Ok(single(plain_cat("cat:mixed", "0", "Mixed Quality"))),
+        ObjectId::CatCm => Ok(single(plain_cat("cat:cm", "0", "Composer"))),
+        ObjectId::CatCn => Ok(single(plain_cat("cat:cn", "0", "Conductor"))),
+        ObjectId::CatPf => Ok(single(plain_cat("cat:pf", "0", "Performer"))),
         ObjectId::AlbumArtist(name) => Ok(single(person_container(id, "cat:aa", name))),
         ObjectId::Artist(name) => Ok(single(person_container(id, "cat:ar", name))),
         ObjectId::Genre(name) => Ok(single(genre_container(id, "cat:gn", name))),
+        ObjectId::Composer(name) => Ok(single(person_container(id, "cat:cm", name))),
+        ObjectId::Conductor(name) => Ok(single(person_container(id, "cat:cn", name))),
+        ObjectId::Performer(name) => Ok(single(person_container(id, "cat:pf", name))),
         ObjectId::Album(album_id) => albums::album_metadata(ctx, *album_id),
         ObjectId::Track(track_id) => tracks::track_metadata(ctx, *track_id),
         ObjectId::Disc { album_id, disc } => {
@@ -121,9 +127,15 @@ pub fn browse_children(
         ObjectId::CatMixed => {
             quality::quality_albums_children(ctx, "mixed", "cat:mixed", start, count)
         }
+        ObjectId::CatCm => categories::composers_children(ctx, start, count),
+        ObjectId::CatCn => categories::conductors_children(ctx, start, count),
+        ObjectId::CatPf => categories::performers_children(ctx, start, count),
         ObjectId::AlbumArtist(name) => albums::albums_by_aa_children(ctx, name, start, count),
         ObjectId::Artist(name) => albums::albums_by_artist_children(ctx, name, start, count),
         ObjectId::Genre(name) => albums::albums_by_genre_children(ctx, name, start, count),
+        ObjectId::Composer(name) => albums::albums_by_composer_children(ctx, name, start, count),
+        ObjectId::Conductor(name) => albums::albums_by_conductor_children(ctx, name, start, count),
+        ObjectId::Performer(name) => albums::albums_by_performer_children(ctx, name, start, count),
         ObjectId::Album(album_id) => tracks::album_tracks_children(ctx, *album_id, start, count),
         ObjectId::Disc { album_id, disc } => {
             tracks::disc_tracks_children(ctx, *album_id, *disc, start, count)
@@ -198,6 +210,9 @@ mod tests {
                 file_size: 1234,
                 added_at: 100,
                 mtime: 200,
+                composer: None,
+                conductor: None,
+                performer: None,
             },
         )
         .unwrap();
@@ -221,6 +236,9 @@ mod tests {
                 file_size: 1234,
                 added_at: 100,
                 mtime: 200,
+                composer: None,
+                conductor: None,
+                performer: None,
             },
         )
         .unwrap();
@@ -244,6 +262,9 @@ mod tests {
                 file_size: 4567,
                 added_at: 100,
                 mtime: 200,
+                composer: None,
+                conductor: None,
+                performer: None,
             },
         )
         .unwrap();

@@ -149,6 +149,90 @@ pub fn albums_by_genre_children(
     })
 }
 
+/// #9: Under `cm:{name}` / `cn:{name}` / `pf:{name}` — album list filtered by
+/// the classical facet column. Mirrors `albums_by_artist_children` and uses a
+/// `WHERE EXISTS` semi-join for the same perf reasons.
+pub fn albums_by_composer_children(
+    ctx: &BrowseContext,
+    name: &str,
+    start: usize,
+    count: usize,
+) -> Result<ChildrenResult> {
+    albums_by_facet_children(ctx, "composer", "cm", name, start, count, |s| {
+        ObjectId::Composer(s)
+    })
+}
+
+pub fn albums_by_conductor_children(
+    ctx: &BrowseContext,
+    name: &str,
+    start: usize,
+    count: usize,
+) -> Result<ChildrenResult> {
+    albums_by_facet_children(ctx, "conductor", "cn", name, start, count, |s| {
+        ObjectId::Conductor(s)
+    })
+}
+
+pub fn albums_by_performer_children(
+    ctx: &BrowseContext,
+    name: &str,
+    start: usize,
+    count: usize,
+) -> Result<ChildrenResult> {
+    albums_by_facet_children(ctx, "performer", "pf", name, start, count, |s| {
+        ObjectId::Performer(s)
+    })
+}
+
+fn albums_by_facet_children(
+    ctx: &BrowseContext,
+    column: &'static str,
+    _prefix: &'static str,
+    name: &str,
+    start: usize,
+    count: usize,
+    parent_id_builder: impl Fn(String) -> ObjectId,
+) -> Result<ChildrenResult> {
+    // `column` is a caller-controlled literal ("composer" / "conductor" / "performer");
+    // never user input — same SQL-injection guard as `categories::facet_children`.
+    let total: i64 = ctx.conn.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM albums a
+             WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id AND t.{col} = ?1)",
+            col = column
+        ),
+        params![name],
+        |r| r.get(0),
+    )?;
+    let mut stmt = ctx.conn.prepare_cached(&format!(
+        "SELECT a.id, a.album, a.effective_album_artist, a.track_count
+         FROM albums a
+         WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id AND t.{col} = ?1)
+         ORDER BY a.album LIMIT ?2 OFFSET ?3",
+        col = column
+    ))?;
+    let rows: Vec<(i64, String, String, i64)> = stmt
+        .query_map(params![name, count as i64, start as i64], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    let parent_id = object_id::encode(&parent_id_builder(name.to_string()));
+    let containers = rows
+        .into_iter()
+        .map(|(id, album, aa, tc)| album_container(ctx, id, &album, &aa, tc, &parent_id))
+        .collect();
+    Ok(ChildrenResult {
+        didl: DidlOutput {
+            containers,
+            items: vec![],
+            nodes: vec![],
+        },
+        total_matches: total as usize,
+    })
+}
+
 /// Helper that builds a single album container (shared by `cat:al` and each facet).
 pub(crate) fn album_container(
     ctx: &BrowseContext,

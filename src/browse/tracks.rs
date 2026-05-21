@@ -5,7 +5,7 @@ use rusqlite::params;
 
 use super::{BrowseContext, ChildrenResult, DidlOutput};
 use crate::error::Result;
-use crate::upnp::didl::{Container, DidlNode, Item, Resource};
+use crate::upnp::didl::{Author, Container, DidlNode, Item, Resource};
 
 /// DB values for a single track row, as fetched by the `load_*` helpers.
 pub(crate) struct TrackRow {
@@ -27,6 +27,10 @@ pub(crate) struct TrackRow {
     pub mime_type: String,
     pub file_size: i64,
     pub album: String,
+    /// #9: classical metadata for the `<upnp:author role="...">` DIDL fields.
+    pub composer: Option<String>,
+    pub conductor: Option<String>,
+    pub performer: Option<String>,
 }
 
 /// BrowseMetadata (`trk:{id}`). Returns a single Item.
@@ -132,7 +136,8 @@ fn load_track_item(ctx: &BrowseContext, track_id: i64) -> Result<Item> {
         "SELECT t.album_id, t.title, t.artist, t.genre, t.track_num, t.disc_num,
                 t.duration_ms, t.sample_rate, t.bit_depth, t.channels,
                 t.bitrate, t.mime_type, t.file_size, a.album,
-                (SELECT IFNULL(MAX(disc_num), 0) FROM tracks WHERE album_id = t.album_id) > 1
+                (SELECT IFNULL(MAX(disc_num), 0) FROM tracks WHERE album_id = t.album_id) > 1,
+                t.composer, t.conductor, t.performer
          FROM tracks t JOIN albums a ON t.album_id = a.id
          WHERE t.id = ?1",
         params![track_id],
@@ -153,6 +158,9 @@ fn load_track_item(ctx: &BrowseContext, track_id: i64) -> Result<Item> {
                 file_size: r.get(12)?,
                 album: r.get(13)?,
                 multi_disc: r.get::<_, i64>(14)? != 0,
+                composer: r.get(15)?,
+                conductor: r.get(16)?,
+                performer: r.get(17)?,
             })
         },
     )?;
@@ -166,7 +174,8 @@ fn load_multi_disc_album_nodes(ctx: &BrowseContext, album_id: i64) -> Result<Vec
     let mut stmt = ctx.conn.prepare_cached(
         "SELECT t.id, t.album_id, t.title, t.artist, t.genre, t.track_num, t.disc_num,
                 t.duration_ms, t.sample_rate, t.bit_depth, t.channels,
-                t.bitrate, t.mime_type, t.file_size, a.album
+                t.bitrate, t.mime_type, t.file_size, a.album,
+                t.composer, t.conductor, t.performer
          FROM tracks t JOIN albums a ON t.album_id = a.id
          WHERE t.album_id = ?1
          ORDER BY t.disc_num, t.track_num",
@@ -191,6 +200,9 @@ fn load_multi_disc_album_nodes(ctx: &BrowseContext, album_id: i64) -> Result<Vec
                     mime_type: r.get(12)?,
                     file_size: r.get(13)?,
                     album: r.get(14)?,
+                    composer: r.get(15)?,
+                    conductor: r.get(16)?,
+                    performer: r.get(17)?,
                 },
             ))
         })?
@@ -241,7 +253,8 @@ fn load_disc_tracks_paged(
     let sql = if disc.is_some() {
         "SELECT t.id, t.album_id, t.title, t.artist, t.genre, t.track_num, t.disc_num,
                 t.duration_ms, t.sample_rate, t.bit_depth, t.channels,
-                t.bitrate, t.mime_type, t.file_size, a.album
+                t.bitrate, t.mime_type, t.file_size, a.album,
+                t.composer, t.conductor, t.performer
          FROM tracks t JOIN albums a ON t.album_id = a.id
          WHERE t.album_id = ?1 AND t.disc_num = ?2
          ORDER BY t.track_num
@@ -249,7 +262,8 @@ fn load_disc_tracks_paged(
     } else {
         "SELECT t.id, t.album_id, t.title, t.artist, t.genre, t.track_num, t.disc_num,
                 t.duration_ms, t.sample_rate, t.bit_depth, t.channels,
-                t.bitrate, t.mime_type, t.file_size, a.album
+                t.bitrate, t.mime_type, t.file_size, a.album,
+                t.composer, t.conductor, t.performer
          FROM tracks t JOIN albums a ON t.album_id = a.id
          WHERE t.album_id = ?1
          ORDER BY t.disc_num, t.track_num
@@ -275,6 +289,9 @@ fn load_disc_tracks_paged(
                 mime_type: r.get(12)?,
                 file_size: r.get(13)?,
                 album: r.get(14)?,
+                composer: r.get(15)?,
+                conductor: r.get(16)?,
+                performer: r.get(17)?,
             },
         ))
     };
@@ -301,6 +318,26 @@ fn load_disc_tracks_paged(
 /// the album's child list (see [`build_disc_divider`]), so titles stay clean.
 pub(crate) fn build_track_item(ctx: &BrowseContext, track_id: i64, row: &TrackRow) -> Item {
     let protocol_info = format!("http-get:*:{}:*", row.mime_type);
+    // #9: build `<upnp:author>` entries from the classical tag columns.
+    let mut authors = Vec::new();
+    if let Some(c) = row.composer.as_deref().filter(|s| !s.is_empty()) {
+        authors.push(Author {
+            role: "Composer",
+            name: c.to_string(),
+        });
+    }
+    if let Some(c) = row.conductor.as_deref().filter(|s| !s.is_empty()) {
+        authors.push(Author {
+            role: "Conductor",
+            name: c.to_string(),
+        });
+    }
+    if let Some(c) = row.performer.as_deref().filter(|s| !s.is_empty()) {
+        authors.push(Author {
+            role: "Performer",
+            name: c.to_string(),
+        });
+    }
     Item {
         id: format!("trk:{track_id}"),
         parent_id: format!("alb:{}", row.album_id),
@@ -315,6 +352,7 @@ pub(crate) fn build_track_item(ctx: &BrowseContext, track_id: i64, row: &TrackRo
         } else {
             None
         },
+        authors,
         album_art_uri: Some(format!("{}/{}", ctx.art_base_url, row.album_id)),
         res: Resource {
             url: format!("{}/{}", ctx.stream_base_url, track_id),
@@ -390,6 +428,9 @@ mod tests {
                     file_size: 1234,
                     added_at: 100,
                     mtime: 200,
+                    composer: None,
+                    conductor: None,
+                    performer: None,
                 },
             )
             .unwrap();

@@ -60,6 +60,10 @@ pub struct TrackRow<'a> {
     pub file_size: u64,
     pub added_at: i64,
     pub mtime: i64,
+    /// #9: classical-library tags. NULL when absent.
+    pub composer: Option<&'a str>,
+    pub conductor: Option<&'a str>,
+    pub performer: Option<&'a str>,
 }
 
 /// Upsert into tracks (SPEC §4.3). On `path` UNIQUE conflict, update everything
@@ -80,9 +84,10 @@ pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
            track_num, disc_num, duration_ms,
            sample_rate, bit_depth, channels, bitrate,
            codec, mime_type, file_size,
-           added_at, mtime
+           added_at, mtime,
+           composer, conductor, performer
          )
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
         params![
             row.album_id,
             row.path,
@@ -101,6 +106,9 @@ pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
             row.file_size as i64,
             row.added_at,
             row.mtime,
+            row.composer,
+            row.conductor,
+            row.performer,
         ],
     )?;
     if inserted == 1 {
@@ -123,8 +131,11 @@ pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
            codec       = ?12,
            mime_type   = ?13,
            file_size   = ?14,
-           mtime       = ?15
-         WHERE path = ?16",
+           mtime       = ?15,
+           composer    = ?16,
+           conductor   = ?17,
+           performer   = ?18
+         WHERE path = ?19",
         params![
             row.album_id,
             row.title,
@@ -141,6 +152,9 @@ pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
             row.mime_type,
             row.file_size as i64,
             row.mtime,
+            row.composer,
+            row.conductor,
+            row.performer,
             row.path,
         ],
     )?;
@@ -238,6 +252,9 @@ mod tests {
             file_size: 1234,
             added_at,
             mtime,
+            composer: None,
+            conductor: None,
+            performer: None,
         }
     }
 

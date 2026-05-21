@@ -29,8 +29,17 @@ pub struct Item {
     /// Emitted as `<upnp:originalDiscNumber>` when set. `None` (or 0 at the
     /// call site) is omitted — single-disc albums shouldn't broadcast "Disc 1".
     pub original_disc_number: Option<u32>,
+    /// `<upnp:author role="...">name</upnp:author>` entries for classical
+    /// metadata (#9). Composer / Conductor / Performer (orchestra) emit here
+    /// with the appropriate `role` attribute.
+    pub authors: Vec<Author>,
     pub album_art_uri: Option<String>,
     pub res: Resource,
+}
+
+pub struct Author {
+    pub role: &'static str,
+    pub name: String,
 }
 
 /// Order-preserving DIDL child. Used when the response needs to interleave
@@ -142,6 +151,15 @@ fn push_item(s: &mut String, item: &Item) {
             s,
             "<upnp:originalDiscNumber>{}</upnp:originalDiscNumber>",
             n
+        )
+        .unwrap();
+    }
+    for author in &item.authors {
+        write!(
+            s,
+            r#"<upnp:author role="{}">{}</upnp:author>"#,
+            author.role,
+            xml_escape(&author.name)
         )
         .unwrap();
     }
@@ -278,6 +296,7 @@ mod tests {
             genre: None,
             original_track_number: Some(3),
             original_disc_number: Some(2),
+            authors: vec![],
             album_art_uri: Some("http://x/art/1".to_string()),
             res: Resource {
                 url: "http://x/stream/42".to_string(),
@@ -315,6 +334,7 @@ mod tests {
             genre: None,
             original_track_number: Some(1),
             original_disc_number: None,
+            authors: vec![],
             album_art_uri: None,
             res: Resource {
                 url: "http://x/stream/1".to_string(),

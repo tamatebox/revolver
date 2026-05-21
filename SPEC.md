@@ -43,7 +43,7 @@ A simple UPnP/DLNA MediaServer for personal music libraries.
 | Multiple libraries | Not planned. One root directory. |
 | Tag editing | Not planned. Read-only. |
 | Genre cleanup / tag normalization | Not planned. Tag values are used as-is. |
-| Composer / Conductor / Orchestra facet | Future work. |
+| Composer / Conductor / Orchestra facet | Implemented (§6.2, #9). |
 | Year / Decade facet | Future work. |
 
 ---
@@ -105,6 +105,9 @@ CREATE TABLE tracks (
   genre         TEXT,
   track_num     INTEGER,
   disc_num      INTEGER,
+  composer      TEXT,                    -- #9: COMPOSER / TCOM / ©wrt
+  conductor     TEXT,                    -- #9: CONDUCTOR / TPE3
+  performer     TEXT,                    -- #9: PERFORMER / TOPE / ©prf (orchestra / ensemble)
   duration_ms   INTEGER,
   -- Audio properties (for protocolInfo / DIDL-Lite res attributes)
   sample_rate   INTEGER,
@@ -127,6 +130,9 @@ CREATE INDEX idx_trk_artist   ON tracks(artist);
 CREATE INDEX idx_trk_genre    ON tracks(genre);
 CREATE INDEX idx_trk_added    ON tracks(added_at DESC);
 CREATE INDEX idx_trk_played   ON tracks(last_played_at DESC);  -- §6.8
+CREATE INDEX idx_trk_composer ON tracks(composer);              -- #9
+CREATE INDEX idx_trk_conductor ON tracks(conductor);            -- #9
+CREATE INDEX idx_trk_performer ON tracks(performer);            -- #9
 
 -- Server's own state
 CREATE TABLE server_state (
@@ -460,9 +466,11 @@ routes queries by the `upnp:class derivedfrom` filter and runs a `LIKE
   - `object.item.audioItem...`               → Track search
 - `contains` operator on `dc:title` / `upnp:album` / `upnp:artist` /
   `upnp:genre`.
-- `upnp:artist[@role="Composer"]` (or any role) — the role string is
-  captured on the predicate but the SQL layer ignores it until #9 lands the
-  COMPOSER tag in scan.
+- `upnp:artist[@role="Composer"]` (or `Conductor` / `Performer`) — routed
+  to `tracks.composer` / `tracks.conductor` / `tracks.performer` (#9). For
+  Artist-class searches the response containers also switch to the matching
+  facet (`cm:` / `cn:` / `pf:`). Unknown roles fall through to the default
+  effective_album_artist match.
 - `and`, `or`, parentheses — full AND/OR composition (Linn's Track / global
   search uses an OR across the 4 fields).
 - `*` and the empty string are explicit no-ops (return empty without
@@ -547,9 +555,15 @@ Scheme:
 | `cat:hires` | Hi-Res Albums (quality category) | Fixed |
 | `cat:lossy` | Lossy Albums (quality category) | Fixed |
 | `cat:mixed` | Mixed Quality Albums | Fixed |
+| `cat:cm` | Composer category (#9, surfaced only when populated) | Fixed |
+| `cat:cn` | Conductor category (#9) | Fixed |
+| `cat:pf` | Performer category (#9) | Fixed |
 | `aa:{base64(name)}` | A specific Album Artist | Stable as long as the displayed name doesn't change |
 | `ar:{base64(name)}` | A specific Artist | Same |
 | `gn:{base64(name)}` | A specific Genre | Same |
+| `cm:{base64(name)}` | A specific Composer (#9) | Same |
+| `cn:{base64(name)}` | A specific Conductor (#9) | Same |
+| `pf:{base64(name)}` | A specific Performer (#9) | Same |
 | `alb:{album_id}` | A specific Album | Tied to `albums.id`, stable across tag edits |
 | `trk:{track_id}` | A specific Track | Tied to `tracks.id` |
 
@@ -568,7 +582,10 @@ Name segments are **URL-safe base64** to avoid `/`, spaces, non-ASCII, etc.
 ├── "cat:random"  Random
 ├── "cat:hires"   Hi-Res Albums        ← quality category
 ├── "cat:lossy"   Lossy Albums         ← quality category
-└── "cat:mixed"   Mixed Quality        ← quality category
+├── "cat:mixed"   Mixed Quality        ← quality category
+├── "cat:cm"      Composer             ← #9, surfaced only when populated
+├── "cat:cn"      Conductor            ← #9
+└── "cat:pf"      Performer            ← #9
 ```
 
 `cat:recent` returns an **album list directly**, sorted by
@@ -623,6 +640,9 @@ Both are exposed via the config API (#13) so per-user tuning is one POST away.
 | `aa:...` | Album Artist name | `object.container.person.musicArtist` |
 | `ar:...` | Artist name | `object.container.person.musicArtist` |
 | `gn:...` | Genre name | `object.container.genre.musicGenre` |
+| `cm:...` | Composer name (#9) | `object.container.person.musicArtist` |
+| `cn:...` | Conductor name (#9) | `object.container.person.musicArtist` |
+| `pf:...` | Performer name (#9) | `object.container.person.musicArtist` |
 | `alb:...` | Album name | `object.container.album.musicAlbum` |
 
 Track items use `object.item.audioItem.musicTrack`.
@@ -644,6 +664,10 @@ Track items use `object.item.audioItem.musicTrack`.
 | children of `cat:played` | `SELECT id, album, effective_album_artist FROM albums a JOIN (SELECT album_id, MAX(last_played_at) AS lp FROM tracks WHERE last_played_at IS NOT NULL GROUP BY album_id) m ON m.album_id = a.id ORDER BY m.lp DESC LIMIT ? OFFSET ?` |
 | children of `cat:random` | Sliced from a shuffled-at-startup `album_id` array. |
 | children of `cat:hires` | `SELECT id, album, effective_album_artist FROM albums WHERE quality = 'hires' ORDER BY effective_album_artist, album LIMIT ? OFFSET ?` |
+| children of `cat:cm` (#9) | `SELECT DISTINCT composer FROM tracks WHERE composer IS NOT NULL AND composer != '' ORDER BY composer COLLATE NOCASE LIMIT ? OFFSET ?` |
+| children of `cm:{name}` (#9) | `SELECT a.id, a.album, a.effective_album_artist, a.track_count FROM albums a WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id AND t.composer = ?) ORDER BY a.album LIMIT ? OFFSET ?` |
+| `cat:cn` / `cn:{name}` (#9) | Same shape as composer, against `tracks.conductor`. |
+| `cat:pf` / `pf:{name}` (#9) | Same shape as composer, against `tracks.performer`. |
 | children of `cat:lossy` | `SELECT id, album, effective_album_artist FROM albums WHERE quality = 'lossy' ORDER BY effective_album_artist, album LIMIT ? OFFSET ?` |
 | children of `cat:mixed` | `SELECT id, album, effective_album_artist FROM albums WHERE quality = 'mixed' ORDER BY effective_album_artist, album LIMIT ? OFFSET ?` |
 
@@ -782,6 +806,9 @@ Album containers use `object.container.album.musicAlbum`.
   <upnp:genre>...</upnp:genre>
   <upnp:originalTrackNumber>...</upnp:originalTrackNumber>
   <upnp:originalDiscNumber>...</upnp:originalDiscNumber>  <!-- multi-disc albums only -->
+  <upnp:author role="Composer">...</upnp:author>           <!-- #9, when tag present -->
+  <upnp:author role="Conductor">...</upnp:author>          <!-- #9, when tag present -->
+  <upnp:author role="Performer">...</upnp:author>          <!-- #9, when tag present -->
   <upnp:albumArtURI>http://.../art/{album_id}</upnp:albumArtURI>
   <res
     protocolInfo="http-get:*:audio/flac:*"
@@ -1255,7 +1282,17 @@ quality_in_title_show_specs = true           # include numeric specs like "Hi-Re
 16. Recently Added time-range submenu (§6.7).
 17. Recently Played view via stream-hit counting (`cat:played`, §6.8).
 18. Web admin UI (§8.4).
-19. Multi-disc albums (`MAX(disc_num) > 1`) emit:
+19. Composer / Conductor / Performer classical facets (#9). New nullable
+    `tracks.{composer,conductor,performer}` columns read via lofty
+    (`COMPOSER` / `TCOM` / `©wrt`, `CONDUCTOR` / `TPE3`, `PERFORMER` /
+    `TOPE` / `©prf`). New top-level facets `cat:cm` / `cat:cn` / `cat:pf`
+    surface only when the library has populated rows (hidden on
+    non-classical collections). Per-track DIDL emits
+    `<upnp:author role="Composer|Conductor|Performer">name</upnp:author>`.
+    Search routes `upnp:artist[@role="..."]` to the matching column and
+    returns the matching `cm:` / `cn:` / `pf:` containers.
+
+20. Multi-disc albums (`MAX(disc_num) > 1`) emit:
     - `<upnp:originalDiscNumber>` on each track (for spec-compliant control
       points such as BubbleUPnP / JRiver), and
     - **disc-divider containers** (`disc:{album_id}:{disc}` with title
@@ -1274,7 +1311,6 @@ quality_in_title_show_specs = true           # include numeric specs like "Hi-Re
   rescan (`scan.watch`, `scan.rescan_interval_minutes`; spec'd in §4.4 / §8.5
   / §12, not yet implemented).
 - `dc:title` quality decoration (opt-in, §10.5).
-- Composer / Conductor / Orchestra facet (for classical libraries).
 - Year facet.
 - OpenHome Info subscribe for accurate playback timing (refines the stream-
   hit counter in §6.8).

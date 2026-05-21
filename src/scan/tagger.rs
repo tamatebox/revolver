@@ -17,6 +17,12 @@ pub struct TrackTags {
     pub compilation: bool,
     pub track_num: Option<u32>,
     pub disc_num: Option<u32>,
+    /// COMPOSER / TCOM / ©wrt — for classical library browsing (#9).
+    pub composer: Option<String>,
+    /// CONDUCTOR / TPE3 — for classical library browsing (#9).
+    pub conductor: Option<String>,
+    /// PERFORMER / TOPE / ©prf — orchestra / ensemble (#9).
+    pub performer: Option<String>,
     pub duration_ms: Option<u64>,
     pub sample_rate: Option<u32>,
     pub bit_depth: Option<u8>,
@@ -77,24 +83,40 @@ pub fn read(path: &Path) -> Result<TrackTags, TagError> {
         None
     };
 
-    let (title, artist, album_artist, album, genre, compilation, track_num, disc_num) =
-        if let Some(t) = tag {
-            (
-                t.get_string(ItemKey::TrackTitle).map(String::from),
-                t.get_string(ItemKey::TrackArtist).map(String::from),
-                t.get_string(ItemKey::AlbumArtist).map(String::from),
-                t.get_string(ItemKey::AlbumTitle).map(String::from),
-                t.get_string(ItemKey::Genre).map(String::from),
-                t.get_string(ItemKey::FlagCompilation)
-                    .map(parse_bool_flag)
-                    .unwrap_or(false),
-                t.get_string(ItemKey::TrackNumber)
-                    .and_then(parse_num_prefix),
-                t.get_string(ItemKey::DiscNumber).and_then(parse_num_prefix),
-            )
-        } else {
-            (None, None, None, None, None, false, None, None)
-        };
+    let (
+        title,
+        artist,
+        album_artist,
+        album,
+        genre,
+        compilation,
+        track_num,
+        disc_num,
+        composer,
+        conductor,
+        performer,
+    ) = if let Some(t) = tag {
+        (
+            t.get_string(ItemKey::TrackTitle).map(String::from),
+            t.get_string(ItemKey::TrackArtist).map(String::from),
+            t.get_string(ItemKey::AlbumArtist).map(String::from),
+            t.get_string(ItemKey::AlbumTitle).map(String::from),
+            t.get_string(ItemKey::Genre).map(String::from),
+            t.get_string(ItemKey::FlagCompilation)
+                .map(parse_bool_flag)
+                .unwrap_or(false),
+            t.get_string(ItemKey::TrackNumber)
+                .and_then(parse_num_prefix),
+            t.get_string(ItemKey::DiscNumber).and_then(parse_num_prefix),
+            t.get_string(ItemKey::Composer).map(String::from),
+            t.get_string(ItemKey::Conductor).map(String::from),
+            t.get_string(ItemKey::Performer).map(String::from),
+        )
+    } else {
+        (
+            None, None, None, None, None, false, None, None, None, None, None,
+        )
+    };
 
     Ok(TrackTags {
         title,
@@ -105,6 +127,9 @@ pub fn read(path: &Path) -> Result<TrackTags, TagError> {
         compilation,
         track_num,
         disc_num,
+        composer,
+        conductor,
+        performer,
         duration_ms: Some(props.duration().as_millis() as u64),
         sample_rate: props.sample_rate(),
         bit_depth,

@@ -48,6 +48,9 @@ pub fn default_track_row<'a>(album_id: i64, path: &'a str, added_at: i64) -> Tra
         file_size: 1,
         added_at,
         mtime: 0,
+        composer: None,
+        conductor: None,
+        performer: None,
     }
 }
 

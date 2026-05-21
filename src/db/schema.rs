@@ -10,7 +10,7 @@ use crate::error::Result;
 /// would silently corrupt data).
 ///
 /// Bump by +1 whenever a column is added or removed.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Table definitions from SPEC §3.1. Idempotent via `CREATE ... IF NOT EXISTS`.
 const SCHEMA_SQL: &str = r#"
@@ -53,7 +53,10 @@ CREATE TABLE IF NOT EXISTS tracks (
   added_at       INTEGER NOT NULL,
   mtime          INTEGER NOT NULL,
   play_count     INTEGER NOT NULL DEFAULT 0,
-  last_played_at INTEGER
+  last_played_at INTEGER,
+  composer       TEXT,
+  conductor      TEXT,
+  performer      TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_trk_album  ON tracks(album_id);
@@ -89,6 +92,10 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     // Maintained after scan and on play_count updates (db/albums.rs::recalc_last_*).
     ensure_column(conn, "albums", "last_added_at", "INTEGER")?;
     ensure_column(conn, "albums", "last_played_at", "INTEGER")?;
+    // #9: Composer / Conductor / Performer columns for the classical-music facets.
+    ensure_column(conn, "tracks", "composer", "TEXT")?;
+    ensure_column(conn, "tracks", "conductor", "TEXT")?;
+    ensure_column(conn, "tracks", "performer", "TEXT")?;
     // Create indexes only after the columns are guaranteed to exist.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_trk_played ON tracks(last_played_at DESC)",
@@ -100,6 +107,18 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     )?;
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_alb_last_played ON albums(last_played_at DESC)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_trk_composer ON tracks(composer)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_trk_conductor ON tracks(conductor)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_trk_performer ON tracks(performer)",
         [],
     )?;
     // Write schema_version only after all ALTERs succeed. By **not writing on

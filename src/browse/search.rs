@@ -12,8 +12,9 @@
 //!   title / album / artist / genre predicates, return track items.
 //!
 //! All comparisons are `LIKE '%X%' COLLATE NOCASE`. Linn's role attribute
-//! (`upnp:artist[@role="Composer"]`) is parsed but ignored at the SQL layer
-//! until #9 lands a `composer` column.
+//! `upnp:artist[@role="Composer"]` (or `Conductor` / `Performer`) is routed
+//! to the matching tracks column (#9). For Artist-class searches the result
+//! switches container type to match (`cm:` / `cn:` / `pf:`).
 
 use rusqlite::types::Value as SqlValue;
 
@@ -123,7 +124,7 @@ fn predicate_to_sql_albums(p: &Predicate) -> WhereClause {
     // Map title→album, album→album, artist→effective_album_artist. Genre is
     // a track-level attribute on revolver's schema and doesn't appear on
     // albums; if it shows up here we drop that branch.
-    walk(p, &|prop| match prop {
+    walk(p, &|prop, _role| match prop {
         Property::Title | Property::Album => Some("album"),
         Property::Artist => Some("effective_album_artist"),
         Property::Genre => None,
@@ -138,10 +139,20 @@ fn search_artists(
     start: usize,
     count: usize,
 ) -> Result<SearchResult> {
+    // #9: if the predicate carries `[@role="Composer"]` (etc.) Linn is asking
+    // for that classical facet, not the regular Album Artist list. Route to
+    // the appropriate column and return matching cm/cn/pf containers.
+    if let Some(role) = first_role(predicate) {
+        if let Some((column, prefix, id_builder)) = role_to_column(role) {
+            return search_classical_facet(
+                ctx, predicate, column, prefix, id_builder, start, count,
+            );
+        }
+    }
     // For Artist-class searches Linn sends `dc:title contains "X"` — meaning
     // the artist name. Map title→effective_album_artist. We also accept
     // upnp:artist for the same reason.
-    let where_clause = walk(predicate, &|prop| match prop {
+    let where_clause = walk(predicate, &|prop, _role| match prop {
         Property::Title | Property::Artist => Some("effective_album_artist"),
         _ => None,
     });
@@ -215,10 +226,17 @@ fn search_track_items(
     start: usize,
     count: usize,
 ) -> Result<SearchResult> {
-    let where_clause = walk(predicate, &|prop| match prop {
+    // #9: if `upnp:artist[@role="Composer"]` (etc.) appears, route that leaf
+    // to the matching tracks column rather than `t.artist`.
+    let where_clause = walk(predicate, &|prop, role| match prop {
         Property::Title => Some("t.title"),
         Property::Album => Some("a.album"),
-        Property::Artist => Some("t.artist"),
+        Property::Artist => match role {
+            Some("Composer") => Some("t.composer"),
+            Some("Conductor") => Some("t.conductor"),
+            Some("Performer") => Some("t.performer"),
+            _ => Some("t.artist"),
+        },
         Property::Genre => Some("t.genre"),
     });
     if where_clause.is_empty() {
@@ -244,7 +262,8 @@ fn search_track_items(
         "SELECT t.id, t.album_id, t.title, t.artist, t.genre, t.track_num, t.disc_num,
                 t.duration_ms, t.sample_rate, t.bit_depth, t.channels,
                 t.bitrate, t.mime_type, t.file_size, a.album,
-                (SELECT IFNULL(MAX(disc_num), 0) FROM tracks WHERE album_id = t.album_id) > 1
+                (SELECT IFNULL(MAX(disc_num), 0) FROM tracks WHERE album_id = t.album_id) > 1,
+                t.composer, t.conductor, t.performer
          FROM tracks t JOIN albums a ON t.album_id = a.id
          WHERE {}
          ORDER BY t.title COLLATE NOCASE
@@ -274,6 +293,9 @@ fn search_track_items(
                     file_size: r.get(13)?,
                     album: r.get(14)?,
                     multi_disc: r.get::<_, i64>(15)? != 0,
+                    composer: r.get(16)?,
+                    conductor: r.get(17)?,
+                    performer: r.get(18)?,
                 },
             ))
         })?
@@ -294,6 +316,124 @@ fn search_track_items(
     })
 }
 
+// ── #9 helpers: route role-tagged Artist-class searches to composer / etc. ─
+
+/// First non-empty `role` attribute found anywhere in the predicate tree.
+/// Used to decide whether an Artist-class search is asking for a classical
+/// facet (Composer / Conductor / Performer) instead of Album Artist.
+fn first_role(p: &Predicate) -> Option<&str> {
+    match p {
+        Predicate::Contains { role, .. } => role.as_deref(),
+        Predicate::And(children) | Predicate::Or(children) => children.iter().find_map(first_role),
+        _ => None,
+    }
+}
+
+type RoleRoute = (&'static str, &'static str, fn(String) -> ObjectId);
+
+/// `role="Composer"` → (column, parent-cat id, ObjectId constructor). Returns
+/// `None` for unrecognized roles (search falls back to the default
+/// effective_album_artist path so unknown roles don't break the response).
+fn role_to_column(role: &str) -> Option<RoleRoute> {
+    match role {
+        "Composer" => Some(("composer", "cat:cm", ObjectId::Composer)),
+        "Conductor" => Some(("conductor", "cat:cn", ObjectId::Conductor)),
+        "Performer" => Some(("performer", "cat:pf", ObjectId::Performer)),
+        _ => None,
+    }
+}
+
+/// #9: search a classical facet column. Mirrors `search_artists` but queries
+/// `DISTINCT t.{column} FROM tracks` and returns the facet's container kind.
+fn search_classical_facet(
+    ctx: &BrowseContext,
+    predicate: &Predicate,
+    column: &'static str,
+    parent_cat: &'static str,
+    make_id: fn(String) -> ObjectId,
+    start: usize,
+    count: usize,
+) -> Result<SearchResult> {
+    // Accept dc:title and upnp:artist in the predicate; map both to the facet
+    // column. role is already known (`first_role`) and not re-checked per leaf.
+    let where_clause = walk(predicate, &|prop, _role| match prop {
+        Property::Title | Property::Artist => Some(match_column(column)),
+        _ => None,
+    });
+    if where_clause.is_empty() {
+        return Ok(empty());
+    }
+
+    let count_sql = format!(
+        "SELECT COUNT(*) FROM (SELECT DISTINCT {col} FROM tracks
+         WHERE {col} IS NOT NULL AND {col} != '' AND {where_})",
+        col = column,
+        where_ = where_clause.sql,
+    );
+    let total: i64 = ctx.conn.query_row(
+        &count_sql,
+        rusqlite::params_from_iter(&where_clause.params),
+        |r| r.get(0),
+    )?;
+
+    let mut list_params = where_clause.params.clone();
+    list_params.push(SqlValue::from(count as i64));
+    list_params.push(SqlValue::from(start as i64));
+    let sql = format!(
+        "SELECT DISTINCT {col} FROM tracks
+         WHERE {col} IS NOT NULL AND {col} != '' AND {where_}
+         ORDER BY {col} COLLATE NOCASE
+         LIMIT ?{lim} OFFSET ?{off}",
+        col = column,
+        where_ = where_clause.sql,
+        lim = where_clause.params.len() + 1,
+        off = where_clause.params.len() + 2,
+    );
+    let mut stmt = ctx.conn.prepare_cached(&sql)?;
+    let names: Vec<String> = stmt
+        .query_map(rusqlite::params_from_iter(&list_params), |r| {
+            r.get::<_, String>(0)
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let containers: Vec<Container> = names
+        .into_iter()
+        .map(|name| {
+            let id = make_id(name.clone());
+            Container {
+                id: object_id::encode(&id),
+                parent_id: parent_cat.to_string(),
+                title: name,
+                upnp_class: "object.container.person.musicArtist",
+                child_count: None,
+                artist: None,
+                album_art_uri: None,
+            }
+        })
+        .collect();
+    Ok(SearchResult {
+        didl: DidlOutput {
+            containers,
+            items: vec![],
+            nodes: vec![],
+        },
+        total_matches: total as usize,
+    })
+}
+
+/// Static lookup for facet column SQL safe identifier. Called with a literal
+/// "composer" / "conductor" / "performer" passed in by `role_to_column`, so the
+/// switch here is exhaustive without exposing user input to the SQL string.
+fn match_column(col: &'static str) -> &'static str {
+    match col {
+        "composer" => "composer",
+        "conductor" => "conductor",
+        "performer" => "performer",
+        _ => "composer",
+    }
+}
+
 // ── Predicate → SQL ───────────────────────────────────────────────────────
 
 #[derive(Default)]
@@ -308,11 +448,19 @@ impl WhereClause {
     }
 }
 
-/// Walk a predicate tree, mapping each `Property` to a SQL column via
-/// `column_for`. Returns the WHERE-clause SQL plus its positional params.
-/// `column_for` returning `None` drops that leaf (e.g. genre on the albums
-/// table); the surrounding AND/OR is simplified accordingly.
-fn walk(p: &Predicate, column_for: &dyn Fn(&Property) -> Option<&'static str>) -> WhereClause {
+/// Walk a predicate tree, mapping each `Property` (with its optional `role`
+/// attribute) to a SQL column via `column_for`. Returns the WHERE-clause SQL
+/// plus its positional params. `column_for` returning `None` drops that leaf
+/// (e.g. genre on the albums table); the surrounding AND/OR is simplified
+/// accordingly.
+///
+/// The `role` argument lets Track-class search route
+/// `upnp:artist[@role="Composer"]` to the `t.composer` column instead of
+/// `t.artist` (#9).
+fn walk(
+    p: &Predicate,
+    column_for: &dyn Fn(&Property, Option<&str>) -> Option<&'static str>,
+) -> WhereClause {
     let mut w = WhereClause::default();
     walk_inner(p, column_for, &mut w);
     w
@@ -320,12 +468,12 @@ fn walk(p: &Predicate, column_for: &dyn Fn(&Property) -> Option<&'static str>) -
 
 fn walk_inner(
     p: &Predicate,
-    column_for: &dyn Fn(&Property) -> Option<&'static str>,
+    column_for: &dyn Fn(&Property, Option<&str>) -> Option<&'static str>,
     out: &mut WhereClause,
 ) {
     match p {
-        Predicate::Contains { prop, value, .. } => {
-            if let Some(col) = column_for(prop) {
+        Predicate::Contains { prop, value, role } => {
+            if let Some(col) = column_for(prop, role.as_deref()) {
                 let placeholder = out.params.len() + 1;
                 out.sql
                     .push_str(&format!("{} LIKE ?{} COLLATE NOCASE", col, placeholder));
@@ -343,7 +491,7 @@ fn walk_inner(
 fn emit_join(
     children: &[Predicate],
     sep: &str,
-    column_for: &dyn Fn(&Property) -> Option<&'static str>,
+    column_for: &dyn Fn(&Property, Option<&str>) -> Option<&'static str>,
     out: &mut WhereClause,
 ) {
     let mut parts: Vec<(String, Vec<SqlValue>)> = Vec::with_capacity(children.len());
@@ -379,7 +527,7 @@ fn emit_join(
 /// `emit_join` so we can renumber later.
 fn walk_with_local_indices(
     p: &Predicate,
-    column_for: &dyn Fn(&Property) -> Option<&'static str>,
+    column_for: &dyn Fn(&Property, Option<&str>) -> Option<&'static str>,
     out: &mut WhereClause,
 ) {
     walk_inner(p, column_for, out);
@@ -446,15 +594,36 @@ mod tests {
             100,
         )
         .unwrap();
-        for (album_id, path, title, artist) in [
+        // #9: third track also carries Composer / Conductor / Performer tags so
+        // the role-tagged search tests have something to match.
+        for (album_id, path, title, artist, composer, conductor, performer) in [
             (
                 beatles_id,
                 "/m/come_together.flac",
                 "Come Together",
                 "The Beatles",
+                None,
+                None,
+                None,
             ),
-            (beatles_id, "/m/something.flac", "Something", "The Beatles"),
-            (va_id, "/m/va_track.mp3", "VA Track", "Some Singer"),
+            (
+                beatles_id,
+                "/m/something.flac",
+                "Something",
+                "The Beatles",
+                None,
+                None,
+                None,
+            ),
+            (
+                va_id,
+                "/m/va_track.mp3",
+                "VA Track",
+                "Some Singer",
+                Some("J.S. Bach"),
+                Some("Karajan"),
+                Some("Berlin Philharmonic"),
+            ),
         ] {
             tracks::upsert(
                 &conn,
@@ -476,6 +645,9 @@ mod tests {
                     file_size: 1234,
                     added_at: 100,
                     mtime: 200,
+                    composer,
+                    conductor,
+                    performer,
                 },
             )
             .unwrap();
@@ -587,20 +759,58 @@ mod tests {
         assert_eq!(r.total_matches, 3);
     }
 
-    // ── Composer (role attribute — parsed, currently behaves like artist) ─
+    // ── Composer / Conductor / Performer (role attribute, #9) ─────────────
 
     #[test]
-    fn st4_composer_role_attribute_falls_through_to_artist_search() {
+    fn st4_composer_role_returns_composer_container() {
         let conn = seed_db();
-        // role="Composer" is parsed and stored on the Predicate, but the SQL
-        // layer ignores it (no composer column yet). The search behaves as a
-        // plain artist search. The Various Artists row matches.
+        // role="Composer" routes to the composer column. Seeded composer is
+        // "J.S. Bach"; substring "Bach" should match.
         let e = parse_criteria(
-            r#"upnp:class derivedfrom "object.container.person.musicArtist" and upnp:artist[@role="Composer"] contains "Various""#,
+            r#"upnp:class derivedfrom "object.container.person.musicArtist" and upnp:artist[@role="Composer"] contains "Bach""#,
         );
         let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
         assert_eq!(r.total_matches, 1);
-        assert_eq!(r.didl.containers[0].title, "Various Artists");
+        assert_eq!(r.didl.containers[0].title, "J.S. Bach");
+        assert!(r.didl.containers[0].id.starts_with("cm:"));
+        assert_eq!(r.didl.containers[0].parent_id, "cat:cm");
+    }
+
+    #[test]
+    fn st4b_conductor_role_returns_conductor_container() {
+        let conn = seed_db();
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.person.musicArtist" and upnp:artist[@role="Conductor"] contains "Karajan""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.containers[0].title, "Karajan");
+        assert!(r.didl.containers[0].id.starts_with("cn:"));
+    }
+
+    #[test]
+    fn st4c_performer_role_returns_performer_container() {
+        let conn = seed_db();
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.person.musicArtist" and upnp:artist[@role="Performer"] contains "Berlin""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.containers[0].title, "Berlin Philharmonic");
+        assert!(r.didl.containers[0].id.starts_with("pf:"));
+    }
+
+    #[test]
+    fn st4d_track_class_role_composer_routes_to_composer_column() {
+        let conn = seed_db();
+        // Track-class search with role attribute: should hit composer column
+        // (matches the seeded "J.S. Bach"), not artist.
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.item.audioItem" and upnp:artist[@role="Composer"] contains "Bach""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.items[0].title, "VA Track");
     }
 
     // ── No-op / empty ─────────────────────────────────────────────────────
