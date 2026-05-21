@@ -238,7 +238,7 @@ fn search_track_items(
     list_params.push(SqlValue::from(count as i64));
     list_params.push(SqlValue::from(start as i64));
     let sql = format!(
-        "SELECT t.id, t.album_id, t.title, t.artist, t.genre, t.track_num,
+        "SELECT t.id, t.album_id, t.title, t.artist, t.genre, t.track_num, t.disc_num,
                 t.duration_ms, t.sample_rate, t.bit_depth, t.channels,
                 t.bitrate, t.mime_type, t.file_size, a.album
          FROM tracks t JOIN albums a ON t.album_id = a.id
@@ -260,14 +260,15 @@ fn search_track_items(
                     artist: r.get(3)?,
                     genre: r.get(4)?,
                     track_num: r.get(5)?,
-                    duration_ms: r.get(6)?,
-                    sample_rate: r.get(7)?,
-                    bit_depth: r.get(8)?,
-                    channels: r.get(9)?,
-                    bitrate: r.get(10)?,
-                    mime_type: r.get(11)?,
-                    file_size: r.get(12)?,
-                    album: r.get(13)?,
+                    disc_num: r.get(6)?,
+                    duration_ms: r.get(7)?,
+                    sample_rate: r.get(8)?,
+                    bit_depth: r.get(9)?,
+                    channels: r.get(10)?,
+                    bitrate: r.get(11)?,
+                    mime_type: r.get(12)?,
+                    file_size: r.get(13)?,
+                    album: r.get(14)?,
                 },
             ))
         })?

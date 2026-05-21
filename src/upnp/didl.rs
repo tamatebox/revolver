@@ -26,6 +26,9 @@ pub struct Item {
     pub album: Option<String>,
     pub genre: Option<String>,
     pub original_track_number: Option<u32>,
+    /// Emitted as `<upnp:originalDiscNumber>` when set. `None` (or 0 at the
+    /// call site) is omitted — single-disc albums shouldn't broadcast "Disc 1".
+    pub original_disc_number: Option<u32>,
     pub album_art_uri: Option<String>,
     pub res: Resource,
 }
@@ -106,6 +109,14 @@ fn push_item(s: &mut String, item: &Item) {
         write!(
             s,
             "<upnp:originalTrackNumber>{}</upnp:originalTrackNumber>",
+            n
+        )
+        .unwrap();
+    }
+    if let Some(n) = item.original_disc_number {
+        write!(
+            s,
+            "<upnp:originalDiscNumber>{}</upnp:originalDiscNumber>",
             n
         )
         .unwrap();
@@ -242,6 +253,7 @@ mod tests {
             album: Some("Album".to_string()),
             genre: None,
             original_track_number: Some(3),
+            original_disc_number: Some(2),
             album_art_uri: Some("http://x/art/1".to_string()),
             res: Resource {
                 url: "http://x/stream/42".to_string(),
@@ -257,6 +269,7 @@ mod tests {
         let xml = build_didl(&[], &[item]);
         assert!(xml.contains(r#"<item id="trk:42" parentID="alb:1" restricted="1">"#));
         assert!(xml.contains("<upnp:originalTrackNumber>3</upnp:originalTrackNumber>"));
+        assert!(xml.contains("<upnp:originalDiscNumber>2</upnp:originalDiscNumber>"));
         assert!(xml.contains(r#"protocolInfo="http-get:*:audio/flac:*""#));
         assert!(xml.contains(r#"size="12345678""#));
         assert!(xml.contains(r#"duration="0:04:05.000""#));
@@ -264,6 +277,34 @@ mod tests {
         assert!(xml.contains(r#"bitsPerSample="16""#));
         assert!(xml.contains(r#"nrAudioChannels="2""#));
         assert!(xml.contains("http://x/stream/42"));
+    }
+
+    #[test]
+    fn dl3b_item_omits_original_disc_number_when_none() {
+        let item = Item {
+            id: "trk:1".to_string(),
+            parent_id: "alb:1".to_string(),
+            title: "Song".to_string(),
+            upnp_class: "object.item.audioItem.musicTrack",
+            artist: None,
+            album: None,
+            genre: None,
+            original_track_number: Some(1),
+            original_disc_number: None,
+            album_art_uri: None,
+            res: Resource {
+                url: "http://x/stream/1".to_string(),
+                protocol_info: "http-get:*:audio/flac:*".to_string(),
+                size: 1,
+                duration_ms: None,
+                bitrate: None,
+                sample_frequency: None,
+                bits_per_sample: None,
+                nr_audio_channels: None,
+            },
+        };
+        let xml = build_didl(&[], &[item]);
+        assert!(!xml.contains("originalDiscNumber"));
     }
 
     #[test]

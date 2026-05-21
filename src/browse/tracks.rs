@@ -14,6 +14,7 @@ pub(crate) struct TrackRow {
     pub artist: Option<String>,
     pub genre: Option<String>,
     pub track_num: Option<i64>,
+    pub disc_num: Option<i64>,
     pub duration_ms: Option<i64>,
     pub sample_rate: Option<i64>,
     pub bit_depth: Option<i64>,
@@ -57,7 +58,7 @@ pub fn album_tracks_children(
 
 fn load_track_item(ctx: &BrowseContext, track_id: i64) -> Result<Item> {
     let row: TrackRow = ctx.conn.query_row(
-        "SELECT t.album_id, t.title, t.artist, t.genre, t.track_num,
+        "SELECT t.album_id, t.title, t.artist, t.genre, t.track_num, t.disc_num,
                 t.duration_ms, t.sample_rate, t.bit_depth, t.channels,
                 t.bitrate, t.mime_type, t.file_size, a.album
          FROM tracks t JOIN albums a ON t.album_id = a.id
@@ -70,14 +71,15 @@ fn load_track_item(ctx: &BrowseContext, track_id: i64) -> Result<Item> {
                 artist: r.get(2)?,
                 genre: r.get(3)?,
                 track_num: r.get(4)?,
-                duration_ms: r.get(5)?,
-                sample_rate: r.get(6)?,
-                bit_depth: r.get(7)?,
-                channels: r.get(8)?,
-                bitrate: r.get(9)?,
-                mime_type: r.get(10)?,
-                file_size: r.get(11)?,
-                album: r.get(12)?,
+                disc_num: r.get(5)?,
+                duration_ms: r.get(6)?,
+                sample_rate: r.get(7)?,
+                bit_depth: r.get(8)?,
+                channels: r.get(9)?,
+                bitrate: r.get(10)?,
+                mime_type: r.get(11)?,
+                file_size: r.get(12)?,
+                album: r.get(13)?,
             })
         },
     )?;
@@ -91,7 +93,7 @@ fn load_album_tracks(
     count: usize,
 ) -> Result<Vec<Item>> {
     let mut stmt = ctx.conn.prepare_cached(
-        "SELECT t.id, t.album_id, t.title, t.artist, t.genre, t.track_num,
+        "SELECT t.id, t.album_id, t.title, t.artist, t.genre, t.track_num, t.disc_num,
                 t.duration_ms, t.sample_rate, t.bit_depth, t.channels,
                 t.bitrate, t.mime_type, t.file_size, a.album
          FROM tracks t JOIN albums a ON t.album_id = a.id
@@ -109,14 +111,15 @@ fn load_album_tracks(
                     artist: r.get(3)?,
                     genre: r.get(4)?,
                     track_num: r.get(5)?,
-                    duration_ms: r.get(6)?,
-                    sample_rate: r.get(7)?,
-                    bit_depth: r.get(8)?,
-                    channels: r.get(9)?,
-                    bitrate: r.get(10)?,
-                    mime_type: r.get(11)?,
-                    file_size: r.get(12)?,
-                    album: r.get(13)?,
+                    disc_num: r.get(6)?,
+                    duration_ms: r.get(7)?,
+                    sample_rate: r.get(8)?,
+                    bit_depth: r.get(9)?,
+                    channels: r.get(10)?,
+                    bitrate: r.get(11)?,
+                    mime_type: r.get(12)?,
+                    file_size: r.get(13)?,
+                    album: r.get(14)?,
                 },
             ))
         })?
@@ -140,6 +143,7 @@ pub(crate) fn build_track_item(ctx: &BrowseContext, track_id: i64, row: &TrackRo
         album: Some(row.album.clone()),
         genre: row.genre.clone(),
         original_track_number: row.track_num.map(|n| n as u32),
+        original_disc_number: row.disc_num.filter(|&n| n > 0).map(|n| n as u32),
         album_art_uri: Some(format!("{}/{}", ctx.art_base_url, row.album_id)),
         res: Resource {
             url: format!("{}/{}", ctx.stream_base_url, track_id),
