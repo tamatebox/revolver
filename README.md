@@ -95,6 +95,61 @@ curl -X DELETE http://localhost:8200/admin/config/browse.recently_added_limit   
 
 Edits land in the SQLite-backed `config_overrides` table and persist across restarts.
 
+## Triggering rescans externally
+
+revolver intentionally has no in-process filesystem watcher or periodic-rescan loop — every modern host already ships a scheduler, and the rsync-completion case doesn't need watching at all. Wire whichever you prefer to `POST /admin/rescan` (returns 202 immediately; serialized through a semaphore so concurrent calls are safe — extras get 409 and can be ignored).
+
+**rsync post-hook (instant, recommended when you control the sync):**
+
+```sh
+rsync -av --delete /src/ /music/ && curl -fsS -X POST http://revolver:8200/admin/rescan >/dev/null
+```
+
+**systemd timer (periodic safety net):**
+
+```ini
+# /etc/systemd/system/revolver-rescan.service
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/curl -fsS -X POST http://localhost:8200/admin/rescan
+
+# /etc/systemd/system/revolver-rescan.timer
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+[Install]
+WantedBy=timers.target
+```
+
+```sh
+systemctl enable --now revolver-rescan.timer
+```
+
+**cron (any Unix):**
+
+```cron
+*/15 * * * * curl -fsS -X POST http://localhost:8200/admin/rescan >/dev/null
+```
+
+**Docker compose sidecar:**
+
+```yaml
+services:
+  revolver:
+    image: ghcr.io/<owner>/revolver
+    # ...
+  rescan-cron:
+    image: alpine
+    command: >
+      sh -c 'while true; do
+        sleep 900;
+        wget -qO- --post-data= http://revolver:8200/admin/rescan;
+      done'
+    depends_on: [revolver]
+```
+
+Poll `/admin/scan-progress` if you want to know when a triggered scan finishes; read `/admin/scan-report` for the structured result.
+
 ## Security
 
 revolver is designed for **LAN-only deployment**. SSDP discovery requires LAN multicast, and there is no authentication. Do not expose it directly to the public Internet:

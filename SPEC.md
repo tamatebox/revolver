@@ -42,6 +42,7 @@ A simple UPnP/DLNA MediaServer for personal music libraries.
 | Transcoding | Not planned. Files are served as-is. |
 | Multiple libraries | Not planned. One root directory. |
 | Tag editing | Not planned. Read-only. |
+| In-process FS watching / periodic rescan | Not planned. Delegated to `systemd.timer` / `cron` / rsync post-hook via `POST /admin/rescan` (§4.4). |
 | Genre cleanup / tag normalization | Not planned. Tag values are used as-is. |
 | Composer / Conductor / Orchestra facet | Implemented (§6.2, #9). |
 | Year / Decade facet | Implemented (§6.2, #2). |
@@ -285,32 +286,28 @@ ON CONFLICT(path) DO UPDATE SET
 
 ### 4.4 Scan Triggers
 
+revolver itself exposes exactly two trigger paths:
+
 - At server startup (initial run, or when `on_startup = true`).
-- Manual trigger via `POST /admin/rescan`.
-- **File-system watching** (`scan.watch`, §12): on local filesystems, watch
-  `library.root` via the `notify` crate
-  (`inotify` / `FSEvents` / `ReadDirectoryChangesW`) and trigger a rescan after
-  a 5-second debounce (so bulk imports collapse into a single scan). On
-  network filesystems (NFS / SMB / CIFS / FUSE) the watcher is automatically
-  disabled because events are not reliably delivered; fall back to
-  `rescan_interval_minutes` or manual rescan. Backend errors are logged and
-  demoted to `watch_status = "error"` (never panic). Watch status is exposed
-  via `/admin/stats` (§8.5).
-- **Periodic rescan** (`scan.rescan_interval_minutes`, §12): runs a full scan
-  on the configured interval. Set to `0` to disable. Useful as a fallback when
-  watching is unavailable.
+- Manual via `POST /admin/rescan` (#18, async 202).
 
-**NAS detection**: at startup, `statfs(2)` (`GetDriveType` on Windows) is
-called on `library.root`. The filesystem is classified as "network" if:
+**Periodic / event-driven triggering is delegated to the host environment.**
+Filesystem watching (`notify` / `inotify` / `FSEvents`), NAS auto-detection,
+and periodic loops are deliberately *not* implemented in-process — they
+duplicate facilities every modern OS already provides (`systemd.timer`,
+`cron`, `launchd`), and the rsync-completion case has no need for watching
+at all. The recommended patterns:
 
-| OS | Indicator |
+| Scenario | Pattern |
 |---|---|
-| Linux | `f_type` ∈ {`NFS_SUPER_MAGIC` 0x6969, `SMB_SUPER_MAGIC` 0x517B, `CIFS_MAGIC_NUMBER` 0xFF534D42, `FUSE_SUPER_MAGIC` 0x65735546} |
-| macOS | `f_fstypename` ∈ {`smbfs`, `nfs`, `webdav`, `afpfs`} |
-| Windows | `GetDriveType` returns `DRIVE_REMOTE` |
+| Library is rsync'd from elsewhere | Append `&& curl -fsS -X POST http://revolver:8200/admin/rescan` to the rsync command (instant, single trigger per sync) |
+| Periodic safety net | `systemd.timer` / `cron` / `launchd` job that posts to `/admin/rescan` on a schedule |
+| Single-host Docker | Sidecar container (e.g. `alpine` + `crond`) on the same compose network |
 
-**Symlinks**: only paths under `library.root` are watched. Symlink targets
-outside the root are not watched — rely on the next periodic / manual rescan.
+Because `POST /admin/rescan` returns 202 immediately and serializes through
+the `scan_lock` semaphore, concurrent triggers are safe — extra hits just
+get 409 Conflict and can be ignored by the caller. See README for concrete
+recipes.
 
 ### 4.5 Incremental Scan Optimization
 
@@ -1114,8 +1111,7 @@ Endpoint: `GET /art/{album_id}?v={version}`.
   },
   "scan": {
     "last_full_scan_at": 1716800000,
-    "last_scan_duration_ms": 32145,
-    "watch_status": "active"  // "active" | "disabled_nas" | "disabled_config" | "error"
+    "last_scan_duration_ms": 32145
   },
   "runtime": {
     "uptime_seconds": 86400,
@@ -1341,15 +1337,10 @@ extensions = ["flac", "wav", "aiff", "aif", "m4a", "mp3"]
 on_startup = true
 parallel = 8  # rayon thread count
 
-# File-system watching (§4.4).
-# "auto"     → enabled on local FS, disabled on NAS (NFS / SMB / CIFS / FUSE).
-# "enabled"  → force on (use if you trust your NAS's event delivery).
-# "disabled" → force off.
-watch = "auto"
-
-# Periodic full rescan in minutes. 0 disables.
-# Useful as a fallback when `watch` is disabled (e.g., on a NAS).
-rescan_interval_minutes = 0
+# Periodic / event-driven re-scanning is intentionally not configured here.
+# Wire up `systemd.timer`, `cron`, or an rsync post-hook against
+# `POST /admin/rescan` instead — see README "Triggering rescans externally"
+# and §4.4.
 
 [browse]
 # Runtime-tunable browse settings (top-level facet order, Recently Added /
@@ -1444,9 +1435,6 @@ quality_in_title_show_specs = true           # include numeric specs like "Hi-Re
 - Verify gapless playback on additional renderers (real-hardware testing).
 - Memory and startup-time tuning.
 - Error-handling polish; structured logging refinements.
-- File-system watching with NAS auto-detection and configurable periodic
-  rescan (`scan.watch`, `scan.rescan_interval_minutes`; spec'd in §4.4 / §8.5
-  / §12, not yet implemented).
 - `dc:title` quality decoration (opt-in, §10.5).
 - OpenHome Info subscribe for accurate playback timing (refines the stream-
   hit counter in §6.8).
