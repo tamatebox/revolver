@@ -1332,15 +1332,21 @@ when **all three** of the following hold:
 
 Extensions that fail any of these stay out until they pass.
 
-**Currently not emitted** (status, not absolute policy):
+**Currently not emitted, PoC pending:**
 
-- **Linn `X_MAP_*` family** (`X_MAP_BROWSE_ENTRY`, etc.) — PoC pending
-  (#25). Lives in device.xml, would hint top-level facet hierarchy to
-  Linn-aware control points.
-- **Sonos `r:` namespace** (`r:gain`, `r:peakValue`, etc.) — PoC pending.
-  Lives in DIDL-Lite. ReplayGain values are already stored on
-  `tracks.rg_*` (#11) and `/admin/stats.tracks_with_replaygain` exposes
-  coverage; DIDL emission awaits Sonos-side behavior verification.
+- **Sonos `r:` namespace** (`r:gain`, `r:peakValue`, etc.) — Lives in
+  DIDL-Lite. ReplayGain values are already stored on `tracks.rg_*` (#11)
+  and `/admin/stats.tracks_with_replaygain` exposes coverage; DIDL
+  emission awaits Sonos-side behavior verification.
+
+**Evaluated and not adopted:**
+
+- **Linn `X_MAP_*` family** (`X_MAP_BROWSE_ENTRY`, etc.) — investigated
+  in #25 (closed wontfix). The 2015 Linn-private spec has no
+  publicly-verifiable consumer in 2026: the historical primary consumer
+  Kazoo is EOL, and the new Linn App's UX moved away from per-facet
+  tabs. The practical per-facet UI goal is already met via container
+  `<upnp:albumArtURI>` (#24) and standard UPnP hierarchy.
 
 **Not used regardless of vendor support:**
 
