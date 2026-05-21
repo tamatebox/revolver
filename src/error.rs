@@ -28,6 +28,12 @@ pub enum Error {
 
     #[error("db pool: {0}")]
     Pool(#[from] r2d2::Error),
+
+    #[error("internal lock poisoned: {what}")]
+    LockPoisoned { what: &'static str },
+
+    #[error("semaphore closed: {what}")]
+    SemaphoreClosed { what: &'static str },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

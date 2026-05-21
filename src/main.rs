@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use clap::Parser;
 use tokio::sync::{broadcast, Semaphore};
 use tracing_subscriber::EnvFilter;
@@ -138,7 +138,9 @@ async fn main() -> Result<()> {
         let limit = state
             .browse
             .read()
-            .map_err(|_| anyhow!("browse settings lock poisoned at startup reshuffle"))?
+            .map_err(|_| error::Error::LockPoisoned {
+                what: "browse settings (startup reshuffle)",
+            })?
             .random_albums_limit;
         let n = state.random_state.reshuffle(&conn, limit)?;
         tracing::info!(albums = n, "initial random reshuffle complete");
@@ -154,12 +156,11 @@ async fn main() -> Result<()> {
         // ops §P1: replace expect() chain with anyhow to avoid process abort.
         // A closed semaphore is exceptional, but bubbling it up explicitly as a
         // startup failure is easier to trace from ops logs than a panic.
-        let permit = state
-            .scan_lock
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| anyhow!("scan_lock semaphore closed unexpectedly during startup"))?;
+        let permit = state.scan_lock.clone().acquire_owned().await.map_err(|_| {
+            error::Error::SemaphoreClosed {
+                what: "scan_lock (startup)",
+            }
+        })?;
         let library_root = state.library_root.clone();
         let extensions = state.extensions.clone();
         let parallel = state.scan_parallel;

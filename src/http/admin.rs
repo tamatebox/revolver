@@ -343,7 +343,11 @@ pub async fn reshuffle(
     let limit = state
         .browse
         .read()
-        .map_err(|_| HttpError::Internal(anyhow::anyhow!("browse settings lock poisoned")))?
+        .map_err(|_| {
+            HttpError::from(crate::error::Error::LockPoisoned {
+                what: "browse settings (reshuffle)",
+            })
+        })?
         .random_albums_limit;
     let shuffled = tokio::task::spawn_blocking(move || -> crate::error::Result<usize> {
         let conn = pool.get()?;

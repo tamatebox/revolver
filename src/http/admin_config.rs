@@ -180,7 +180,9 @@ impl ConfigUpdateError {
         Self::Internal(e.into())
     }
     fn lock_poisoned() -> Self {
-        Self::Internal(anyhow::anyhow!("config snapshot lock poisoned"))
+        Self::Internal(anyhow::Error::new(crate::error::Error::LockPoisoned {
+            what: "config snapshot",
+        }))
     }
     fn into_http_error(self) -> HttpError {
         match self {
