@@ -4,7 +4,7 @@
 use rusqlite::params;
 
 use super::{BrowseContext, ChildrenResult, DidlOutput};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::upnp::didl::{Author, Container, DidlNode, Item, Resource};
 
 /// DB values for a single track row, as fetched by the `load_*` helpers.
@@ -132,38 +132,41 @@ pub fn disc_tracks_children(
 }
 
 fn load_track_item(ctx: &BrowseContext, track_id: i64) -> Result<Item> {
-    let row: TrackRow = ctx.conn.query_row(
-        "SELECT t.album_id, t.title, t.artist, t.genre, t.track_num, t.disc_num,
+    let row: TrackRow = ctx
+        .conn
+        .query_row(
+            "SELECT t.album_id, t.title, t.artist, t.genre, t.track_num, t.disc_num,
                 t.duration_ms, t.sample_rate, t.bit_depth, t.channels,
                 t.bitrate, t.mime_type, t.file_size, a.album,
                 (SELECT IFNULL(MAX(disc_num), 0) FROM tracks WHERE album_id = t.album_id) > 1,
                 t.composer, t.conductor, t.performer
          FROM tracks t JOIN albums a ON t.album_id = a.id
          WHERE t.id = ?1",
-        params![track_id],
-        |r| {
-            Ok(TrackRow {
-                album_id: r.get(0)?,
-                title: r.get(1)?,
-                artist: r.get(2)?,
-                genre: r.get(3)?,
-                track_num: r.get(4)?,
-                disc_num: r.get(5)?,
-                duration_ms: r.get(6)?,
-                sample_rate: r.get(7)?,
-                bit_depth: r.get(8)?,
-                channels: r.get(9)?,
-                bitrate: r.get(10)?,
-                mime_type: r.get(11)?,
-                file_size: r.get(12)?,
-                album: r.get(13)?,
-                multi_disc: r.get::<_, i64>(14)? != 0,
-                composer: r.get(15)?,
-                conductor: r.get(16)?,
-                performer: r.get(17)?,
-            })
-        },
-    )?;
+            params![track_id],
+            |r| {
+                Ok(TrackRow {
+                    album_id: r.get(0)?,
+                    title: r.get(1)?,
+                    artist: r.get(2)?,
+                    genre: r.get(3)?,
+                    track_num: r.get(4)?,
+                    disc_num: r.get(5)?,
+                    duration_ms: r.get(6)?,
+                    sample_rate: r.get(7)?,
+                    bit_depth: r.get(8)?,
+                    channels: r.get(9)?,
+                    bitrate: r.get(10)?,
+                    mime_type: r.get(11)?,
+                    file_size: r.get(12)?,
+                    album: r.get(13)?,
+                    multi_disc: r.get::<_, i64>(14)? != 0,
+                    composer: r.get(15)?,
+                    conductor: r.get(16)?,
+                    performer: r.get(17)?,
+                })
+            },
+        )
+        .map_err(|e| Error::sqlite_or_not_found(e, "track", track_id))?;
     Ok(build_track_item(ctx, track_id, &row))
 }
 

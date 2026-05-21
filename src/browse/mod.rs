@@ -548,20 +548,30 @@ mod tests {
     }
 
     #[test]
-    fn br8_unknown_album_metadata_returns_err() {
-        // A nonexistent album_id raises a DB query error
-        // (rusqlite::Error::QueryReturnedNoRows). The caller (SOAP handler)
-        // converts it to NoSuchObject.
+    fn br8_unknown_album_metadata_returns_not_found() {
+        // A nonexistent album_id surfaces as `Error::NotFound` so the SOAP
+        // handler can map it to UPnP `701 NoSuchObject` (vs `500 InternalError`
+        // for genuine DB failures).
         let conn = empty_conn();
-        let result = browse_metadata(&ctx(&conn), &ObjectId::Album(99999));
-        assert!(result.is_err());
+        let Err(err) = browse_metadata(&ctx(&conn), &ObjectId::Album(99999)) else {
+            panic!("expected NotFound, got Ok");
+        };
+        assert!(
+            matches!(err, crate::error::Error::NotFound { kind: "album", .. }),
+            "expected NotFound{{kind=album}}, got {err:?}",
+        );
     }
 
     #[test]
-    fn br9_unknown_track_metadata_returns_err() {
+    fn br9_unknown_track_metadata_returns_not_found() {
         let conn = empty_conn();
-        let result = browse_metadata(&ctx(&conn), &ObjectId::Track(99999));
-        assert!(result.is_err());
+        let Err(err) = browse_metadata(&ctx(&conn), &ObjectId::Track(99999)) else {
+            panic!("expected NotFound, got Ok");
+        };
+        assert!(
+            matches!(err, crate::error::Error::NotFound { kind: "track", .. }),
+            "expected NotFound{{kind=track}}, got {err:?}",
+        );
     }
 
     #[test]

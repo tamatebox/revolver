@@ -6,8 +6,22 @@ use rusqlite::Connection;
 
 use crate::browse::{self, search as browse_search, BrowseContext, DidlOutput};
 use crate::db::{state_kv, Pool};
+use crate::error::Error;
 use crate::state::AppState;
 use crate::upnp::{didl, object_id, search, soap};
+
+/// Decide which UPnP fault code matches a browse / search error and emit a log
+/// at the right level. `NotFound` is a routine miss (warn + 701), anything else
+/// is an internal failure (error + 500).
+fn fault_for_browse_error(e: &Error, what: &str) -> soap::SoapFault {
+    if matches!(e, Error::NotFound { .. }) {
+        tracing::warn!(error = %e, "{what}");
+        soap::SoapFault::no_such_object()
+    } else {
+        tracing::error!(error = %e, "{what}");
+        soap::SoapFault::internal_error()
+    }
+}
 
 const CD_SERVICE_TYPE: &str = "urn:schemas-upnp-org:service:ContentDirectory:1";
 /// Upper bound when `RequestedCount = 0` (all results) (SPEC §6.5).
@@ -114,19 +128,14 @@ fn handle_browse(
 
     let (output, num_returned, total_matches) = match browse_flag.as_str() {
         "BrowseMetadata" => {
-            let output = browse::browse_metadata(&ctx, &object_id).map_err(|e| {
-                tracing::error!(error = %e, "browse_metadata failed");
-                soap::SoapFault::no_such_object()
-            })?;
+            let output = browse::browse_metadata(&ctx, &object_id)
+                .map_err(|e| fault_for_browse_error(&e, "browse_metadata failed"))?;
             let n = didl_count(&output);
             (output, n, n)
         }
         "BrowseDirectChildren" => {
-            let result =
-                browse::browse_children(&ctx, &object_id, starting_index, count).map_err(|e| {
-                    tracing::error!(error = %e, "browse_children failed");
-                    soap::SoapFault::no_such_object()
-                })?;
+            let result = browse::browse_children(&ctx, &object_id, starting_index, count)
+                .map_err(|e| fault_for_browse_error(&e, "browse_children failed"))?;
             let n = didl_count(&result.didl);
             (result.didl, n, result.total_matches)
         }
@@ -212,10 +221,8 @@ fn handle_search(
         settings: &browse_settings,
     };
 
-    let result = browse_search::search_tracks(&ctx, &expr, starting_index, count).map_err(|e| {
-        tracing::error!(error = %e, "search_tracks failed");
-        soap::SoapFault::internal_error()
-    })?;
+    let result = browse_search::search_tracks(&ctx, &expr, starting_index, count)
+        .map_err(|e| fault_for_browse_error(&e, "search_tracks failed"))?;
     let update_id = read_update_id(&conn).unwrap_or(0);
 
     let didl_xml = didl::build_didl(&result.didl.containers, &result.didl.items);

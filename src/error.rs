@@ -34,6 +34,25 @@ pub enum Error {
 
     #[error("semaphore closed: {what}")]
     SemaphoreClosed { what: &'static str },
+
+    #[error("not found: {kind} {key}")]
+    NotFound { kind: &'static str, key: String },
+}
+
+impl Error {
+    /// Map a `rusqlite::Error` to either `NotFound` (only on `QueryReturnedNoRows`)
+    /// or the generic `Sqlite` variant. Use at single-row lookup sites where a
+    /// "no such ID" miss should propagate as `NotFound` so the SOAP handler can
+    /// emit `701 NoSuchObject` instead of `500 InternalError`.
+    pub fn sqlite_or_not_found(e: rusqlite::Error, kind: &'static str, key: impl ToString) -> Self {
+        match e {
+            rusqlite::Error::QueryReturnedNoRows => Self::NotFound {
+                kind,
+                key: key.to_string(),
+            },
+            other => Self::Sqlite(other),
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

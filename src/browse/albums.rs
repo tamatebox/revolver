@@ -5,17 +5,20 @@
 use rusqlite::params;
 
 use super::{single, BrowseContext, ChildrenResult, DidlOutput};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::upnp::didl::Container;
 use crate::upnp::object_id::{self, ObjectId};
 
 /// BrowseMetadata (`alb:{id}`). Returns the single album container.
 pub fn album_metadata(ctx: &BrowseContext, album_id: i64) -> Result<DidlOutput> {
-    let (album, eff_aa, track_count): (String, String, i64) = ctx.conn.query_row(
-        "SELECT album, effective_album_artist, track_count FROM albums WHERE id = ?1",
-        params![album_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-    )?;
+    let (album, eff_aa, track_count): (String, String, i64) = ctx
+        .conn
+        .query_row(
+            "SELECT album, effective_album_artist, track_count FROM albums WHERE id = ?1",
+            params![album_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(|e| Error::sqlite_or_not_found(e, "album", album_id))?;
     Ok(single(Container {
         id: format!("alb:{album_id}"),
         parent_id: "cat:al".to_string(),
