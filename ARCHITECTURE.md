@@ -152,7 +152,8 @@ src/
     ├── mod.rs            Router construction, endpoint registration, `HttpError`,
     │                        `ConcurrencyLimitLayer` (256 concurrent connections)
     ├── upnp.rs           `GET /description.xml`, `/scpd/cd.xml`, `/scpd/cm.xml`,
-    │                        `/icon/48.png`, `/icon/120.png`
+    │                        `/icon/48.png`, `/icon/120.png`, `/icon/512.png`,
+    │                        `/icon/cat/{slug}` (per-facet container icons, #24)
     ├── soap_ctrl.rs      `POST /control/cd`, `/control/cm`
     ├── stream.rs         `GET /stream/{track_id}` + Range (SPEC §8.2) +
     │                        play-stats counter (Range absent or `start=0` only +1,

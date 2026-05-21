@@ -89,12 +89,23 @@ CREATE TABLE albums (
   -- Quality classification (computed from tracks during scan, §4.6)
   quality               TEXT NOT NULL DEFAULT 'unknown',
                         -- 'hires' | 'lossless' | 'lossy' | 'mixed' | 'unknown'
+  -- Denormalized timestamps so cat:recent / cat:played skip GROUP BY on the
+  -- hot path. Maintained by `recalc_last_added_at` / `recalc_last_played_at`
+  -- post-scan and by the stream play-stats counter (SPEC §6.7, §6.8, #16).
+  last_added_at         INTEGER,           -- max(tracks.added_at) per album, nullable
+  last_played_at        INTEGER,           -- max(tracks.last_played_at) per album, nullable
+  -- Search shadow columns (#6, see §5.4). Populated by `normalize::for_search`
+  -- at upsert and backfilled on schema upgrade.
+  album_norm                    TEXT,
+  effective_album_artist_norm   TEXT,
   UNIQUE(effective_album_artist, album, compilation)
 );
 
-CREATE INDEX idx_alb_aa       ON albums(effective_album_artist);
-CREATE INDEX idx_alb_first    ON albums(first_seen_at DESC);
-CREATE INDEX idx_alb_quality  ON albums(quality);
+CREATE INDEX idx_alb_aa          ON albums(effective_album_artist);
+CREATE INDEX idx_alb_first       ON albums(first_seen_at DESC);
+CREATE INDEX idx_alb_quality     ON albums(quality);
+CREATE INDEX idx_alb_last_added  ON albums(last_added_at DESC);    -- §6.7
+CREATE INDEX idx_alb_last_played ON albums(last_played_at DESC);   -- §6.8
 
 -- Track-level entity
 CREATE TABLE tracks (
@@ -145,17 +156,29 @@ CREATE TABLE tracks (
   mb_release_id        TEXT,
   mb_release_group_id  TEXT,
   mb_artist_id         TEXT,
-  mb_release_artist_id TEXT
+  mb_release_artist_id TEXT,
+  -- Year derived from `ItemKey::Year` (fallback `RecordingDate`), #2. NULL
+  -- when the tag is absent / unparseable / out of range.
+  year                 INTEGER,
+  -- Search shadow columns (#6, see §5.4). Populated by `normalize::for_search`
+  -- at upsert and backfilled on schema upgrade.
+  title_norm           TEXT,
+  artist_norm          TEXT,
+  genre_norm           TEXT,
+  composer_norm        TEXT,
+  conductor_norm       TEXT,
+  performer_norm       TEXT
 );
 
-CREATE INDEX idx_trk_album    ON tracks(album_id);
-CREATE INDEX idx_trk_artist   ON tracks(artist);
-CREATE INDEX idx_trk_genre    ON tracks(genre);
-CREATE INDEX idx_trk_added    ON tracks(added_at DESC);
-CREATE INDEX idx_trk_played   ON tracks(last_played_at DESC);  -- §6.8
-CREATE INDEX idx_trk_composer ON tracks(composer);              -- #9
-CREATE INDEX idx_trk_conductor ON tracks(conductor);            -- #9
-CREATE INDEX idx_trk_performer ON tracks(performer);            -- #9
+CREATE INDEX idx_trk_album     ON tracks(album_id);
+CREATE INDEX idx_trk_artist    ON tracks(artist);
+CREATE INDEX idx_trk_genre     ON tracks(genre);
+CREATE INDEX idx_trk_added     ON tracks(added_at DESC);
+CREATE INDEX idx_trk_played    ON tracks(last_played_at DESC);  -- §6.8
+CREATE INDEX idx_trk_composer  ON tracks(composer);              -- #9
+CREATE INDEX idx_trk_conductor ON tracks(conductor);             -- #9
+CREATE INDEX idx_trk_performer ON tracks(performer);             -- #9
+CREATE INDEX idx_trk_year      ON tracks(year);                  -- #2
 
 -- Server's own state
 CREATE TABLE server_state (
@@ -185,12 +208,24 @@ index do its job, and keeps query code simple.
 
 ### 3.3 SQLite Settings
 
+Installed on every pooled connection via the r2d2 `with_init` hook
+([src/db/mod.rs](src/db/mod.rs)):
+
 ```sql
-PRAGMA journal_mode = WAL;       -- Browse stays responsive during scans
-PRAGMA synchronous = NORMAL;     -- indexes are regenerable, prefer speed
-PRAGMA foreign_keys = ON;        -- required for ON DELETE CASCADE
-PRAGMA cache_size = -64000;      -- 64MB cache
+PRAGMA journal_mode = WAL;          -- Browse stays responsive during scans
+PRAGMA synchronous = NORMAL;        -- indexes are regenerable, prefer speed
+PRAGMA foreign_keys = ON;           -- required for ON DELETE CASCADE
+PRAGMA cache_size = -64000;         -- 64MB page cache (negative = KB)
+PRAGMA busy_timeout = 5000;         -- 5s wait when the writer is busy, so
+                                    -- callers never need to handle SQLITE_BUSY
+PRAGMA wal_autocheckpoint = 1000;   -- auto-checkpoint at 1000 pages (~4MB)
 ```
+
+Pool size: 8 (sufficient for LAN concurrency at this scale). The post-scan
+pipeline additionally runs `PRAGMA optimize` and `PRAGMA wal_checkpoint(TRUNCATE)`
+once per scan ([src/scan/mod.rs](src/scan/mod.rs)) to refresh the query planner
+and shrink the WAL the scan grew — failures there are logged and never abort
+the scan report.
 
 ---
 
@@ -453,10 +488,15 @@ invalidate their Browse cache.
 - **Increment conditions**: any of:
   - A new track is inserted (scan).
   - A track is deleted (scan).
-  - A track's tags change in a way that affects album/artist structure (e.g.,
-    `album_id` changes, `effective_album_artist` changes).
-  - Pure-audio-property changes (bitrate, etc.) **do not** trigger an
-    increment (avoids needless cache invalidation).
+  - A track's tags change (any of `tracks_updated > 0`).
+  - **MVP note**: tag-change detection is coarse — `tracks_updated`
+    increments on any re-read that produced a different row, so even
+    pure-audio-property changes (bitrate, codec re-detection) trip the
+    bump. Spec intent is that pure-audio changes should not invalidate
+    caches, but the cost of diffing structurally-relevant fields per row
+    outweighs the saved Linn re-fetch. `should_bump_system_update_id`
+    centralizes this decision so it can be tightened later without
+    touching call sites ([src/scan/mod.rs](src/scan/mod.rs)).
 - **GENA event**: when incremented, NOTIFY subscribing control points of the
   new `SystemUpdateID`.
 - **Browse/Search responses**: every response embeds the current value in the
@@ -470,9 +510,14 @@ invalidate their Browse cache.
   - `ConnectionManager:1`
 - `friendlyName` is configurable (default: `"Revolver"`).
 - UUID is persistent (`server_state.uuid`, v4 generated on first run).
-- `<iconList>` advertises two PNGs embedded in the binary, served from
-  `/icon/48.png` (48×48) and `/icon/120.png` (120×120). Source SVG lives at
-  `assets/icon.svg`; PNGs are pre-rendered and committed under `assets/`.
+- `<iconList>` advertises three PNGs embedded in the binary, served from
+  `/icon/48.png` (48×48), `/icon/120.png` (120×120), and `/icon/512.png`
+  (512×512, for the device-picker tile on modern control points). Source SVG
+  lives at `assets/icon.svg`; PNGs are pre-rendered and committed under
+  `assets/`.
+- Per-facet container icons (e.g. the speaker icon on `cat:played`) are
+  served from `/icon/cat/{slug}` and referenced by `<upnp:albumArtURI>` on
+  the root container entries ([src/upnp/icon.rs](src/upnp/icon.rs), #24).
 
 ### 5.3 ContentDirectory:1
 
@@ -603,6 +648,7 @@ Scheme:
 | `cat:al` | Album category | Fixed |
 | `cat:gn` | Genre category | Fixed |
 | `cat:recent` | Recently Added | Fixed |
+| `cat:played` | Recently Played (§6.8) | Fixed |
 | `cat:random` | Random | Fixed |
 | `cat:hires` | Hi-Res Albums (quality category) | Fixed |
 | `cat:lossy` | Lossy Albums (quality category) | Fixed |
@@ -610,6 +656,8 @@ Scheme:
 | `cat:cm` | Composer category (#9, surfaced only when populated) | Fixed |
 | `cat:cn` | Conductor category (#9) | Fixed |
 | `cat:pf` | Performer category (#9) | Fixed |
+| `cat:yr` | Year category (#2, surfaced only when populated) | Fixed |
+| `cat:dec` | Decade category (#2, surfaced only when populated) | Fixed |
 | `aa:{base64(name)}` | A specific Album Artist | Stable as long as the displayed name doesn't change |
 | `ar:{base64(name)}` | A specific Artist | Same |
 | `at:{base64(name)}` | "All tracks by X" flat virtual container (#23) — prepended to `aa:{X}` / `ar:{X}` Browse when X has ≥ 1 track-level row | Same as `aa:` (URL-safe base64 of the name) |
@@ -986,10 +1034,15 @@ because of bad values here.
 | `GET /scpd/cm.xml` | ConnectionManager SCPD |
 | `POST /control/cd` | ContentDirectory SOAP |
 | `POST /control/cm` | ConnectionManager SOAP |
-| `SUBSCRIBE /event/cd` | GENA event subscription |
-| `GET /stream/{track_id}` | Audio file stream (Range support) |
-| `GET /art/{album_id}` | Album art |
-| `GET /` | Web admin UI (HTML, §8.4) |
+| `SUBSCRIBE /event/cd` | GENA event subscription (ContentDirectory) |
+| `SUBSCRIBE /event/cm` | GENA event subscription (ConnectionManager) |
+| `GET /stream/{track_id}` | Audio file stream (Range support, §8.2) |
+| `GET /art/{album_id}` | Album art (§8.3) |
+| `GET /icon/48.png` | Device icon (48×48, advertised in `<iconList>`) |
+| `GET /icon/120.png` | Device icon (120×120) |
+| `GET /icon/512.png` | Device icon (512×512, modern picker tile) |
+| `GET /icon/cat/{slug}` | Per-facet container icon referenced by root `<upnp:albumArtURI>` (#24) |
+| `GET /` | Web admin UI (HTML, §8.4). `/admin/ui` and `/admin/` 308-redirect here for backward compat. |
 | `GET /admin/stats` | Library statistics (JSON, §8.5) |
 | `GET /admin/scan-report` | Most recent scan report (JSON, §4.7) |
 | `GET /admin/scan-progress` | Live in-flight scan counter (JSON, #12) |
