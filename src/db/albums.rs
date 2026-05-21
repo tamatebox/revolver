@@ -20,10 +20,16 @@ pub fn upsert(
     album_artist_raw: Option<&str>,
     first_seen_at: i64,
 ) -> Result<i64> {
+    // #6: derive fuzzy-search shadow values once per upsert. The key fields
+    // are immutable, so on conflict the norm columns also stay correct
+    // (no need to refresh them in the ON CONFLICT branch).
+    let album_norm = crate::normalize::for_search(key.album);
+    let aa_norm = crate::normalize::for_search(key.effective_album_artist);
     let id: i64 = conn.query_row(
         "INSERT INTO albums
-           (effective_album_artist, album, compilation, album_artist_raw, first_seen_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+           (effective_album_artist, album, compilation, album_artist_raw, first_seen_at,
+            album_norm, effective_album_artist_norm)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(effective_album_artist, album, compilation) DO UPDATE SET
            album_artist_raw = excluded.album_artist_raw
          RETURNING id",
@@ -33,6 +39,8 @@ pub fn upsert(
             key.compilation as i64,
             album_artist_raw,
             first_seen_at,
+            album_norm,
+            aa_norm,
         ],
         |row| row.get(0),
     )?;

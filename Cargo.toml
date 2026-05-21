@@ -30,6 +30,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net
 tokio-util = { version = "0.7", features = ["io"] }
 toml = "0.8"
 tower = { version = "0.5", features = ["limit"] }
+unicode-normalization = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }

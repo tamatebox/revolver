@@ -11,10 +11,17 @@
 //! - `ClassFilter::Track` / `Any` → search `tracks` with any combination of
 //!   title / album / artist / genre predicates, return track items.
 //!
-//! All comparisons are `LIKE '%X%' COLLATE NOCASE`. Linn's role attribute
-//! `upnp:artist[@role="Composer"]` (or `Conductor` / `Performer`) is routed
-//! to the matching tracks column (#9). For Artist-class searches the result
-//! switches container type to match (`cm:` / `cn:` / `pf:`).
+//! Comparisons use `LIKE '%X%'` against NFKD-folded shadow columns
+//! (`*_norm`, populated at upsert / migrate; see `crate::normalize`). Both
+//! the column value and the search input flow through the same
+//! [`crate::normalize::for_search`] so accent / halfwidth / hiragana
+//! drift folds away (#6). `COLLATE NOCASE` is no longer needed — the
+//! normalize step lowercases.
+//!
+//! Linn's role attribute `upnp:artist[@role="Composer"]` (or `Conductor` /
+//! `Performer`) is routed to the matching tracks column (#9). For
+//! Artist-class searches the result switches container type to match
+//! (`cm:` / `cn:` / `pf:`).
 
 use rusqlite::types::Value as SqlValue;
 
@@ -92,7 +99,7 @@ fn search_albums(
         "SELECT id, album, effective_album_artist, track_count
          FROM albums
          WHERE {}
-         ORDER BY album COLLATE NOCASE
+         ORDER BY album_norm
          LIMIT ?{lim} OFFSET ?{off}",
         where_clause.sql,
         lim = where_clause.params.len() + 1,
@@ -121,12 +128,12 @@ fn search_albums(
 }
 
 fn predicate_to_sql_albums(p: &Predicate) -> WhereClause {
-    // Map title→album, album→album, artist→effective_album_artist. Genre is
-    // a track-level attribute on revolver's schema and doesn't appear on
-    // albums; if it shows up here we drop that branch.
+    // Map title→album_norm, album→album_norm, artist→effective_album_artist_norm.
+    // Genre is a track-level attribute on revolver's schema and doesn't appear
+    // on albums; if it shows up here we drop that branch.
     walk(p, &|prop, _role| match prop {
-        Property::Title | Property::Album => Some("album"),
-        Property::Artist => Some("effective_album_artist"),
+        Property::Title | Property::Album => Some("album_norm"),
+        Property::Artist => Some("effective_album_artist_norm"),
         Property::Genre => None,
     })
 }
@@ -150,10 +157,10 @@ fn search_artists(
         }
     }
     // For Artist-class searches Linn sends `dc:title contains "X"` — meaning
-    // the artist name. Map title→effective_album_artist. We also accept
+    // the artist name. Map title→effective_album_artist_norm. We also accept
     // upnp:artist for the same reason.
     let where_clause = walk(predicate, &|prop, _role| match prop {
-        Property::Title | Property::Artist => Some("effective_album_artist"),
+        Property::Title | Property::Artist => Some("effective_album_artist_norm"),
         _ => None,
     });
     if where_clause.is_empty() {
@@ -179,7 +186,7 @@ fn search_artists(
         "SELECT DISTINCT effective_album_artist
          FROM albums
          WHERE {}
-         ORDER BY effective_album_artist COLLATE NOCASE
+         ORDER BY effective_album_artist_norm
          LIMIT ?{lim} OFFSET ?{off}",
         where_clause.sql,
         lim = where_clause.params.len() + 1,
@@ -229,15 +236,15 @@ fn search_track_items(
     // #9: if `upnp:artist[@role="Composer"]` (etc.) appears, route that leaf
     // to the matching tracks column rather than `t.artist`.
     let where_clause = walk(predicate, &|prop, role| match prop {
-        Property::Title => Some("t.title"),
-        Property::Album => Some("a.album"),
+        Property::Title => Some("t.title_norm"),
+        Property::Album => Some("a.album_norm"),
         Property::Artist => match role {
-            Some("Composer") => Some("t.composer"),
-            Some("Conductor") => Some("t.conductor"),
-            Some("Performer") => Some("t.performer"),
-            _ => Some("t.artist"),
+            Some("Composer") => Some("t.composer_norm"),
+            Some("Conductor") => Some("t.conductor_norm"),
+            Some("Performer") => Some("t.performer_norm"),
+            _ => Some("t.artist_norm"),
         },
-        Property::Genre => Some("t.genre"),
+        Property::Genre => Some("t.genre_norm"),
     });
     if where_clause.is_empty() {
         return Ok(empty());
@@ -266,7 +273,7 @@ fn search_track_items(
                 t.composer, t.conductor, t.performer
          FROM tracks t JOIN albums a ON t.album_id = a.id
          WHERE {}
-         ORDER BY t.title COLLATE NOCASE
+         ORDER BY t.title_norm
          LIMIT ?{lim} OFFSET ?{off}",
         where_clause.sql,
         lim = where_clause.params.len() + 1,
@@ -345,6 +352,10 @@ fn role_to_column(role: &str) -> Option<RoleRoute> {
 
 /// #9: search a classical facet column. Mirrors `search_artists` but queries
 /// `DISTINCT t.{column} FROM tracks` and returns the facet's container kind.
+///
+/// LIKE matches go against `{column}_norm` (#6). The raw column is still
+/// the source of the container `title` so the user sees the original tag
+/// value, not the folded form.
 fn search_classical_facet(
     ctx: &BrowseContext,
     predicate: &Predicate,
@@ -354,10 +365,11 @@ fn search_classical_facet(
     start: usize,
     count: usize,
 ) -> Result<SearchResult> {
-    // Accept dc:title and upnp:artist in the predicate; map both to the facet
-    // column. role is already known (`first_role`) and not re-checked per leaf.
+    let norm_col = match_column_norm(column);
+    // Accept dc:title and upnp:artist in the predicate; map both to the facet's
+    // norm column. role is already known (`first_role`) and not re-checked per leaf.
     let where_clause = walk(predicate, &|prop, _role| match prop {
-        Property::Title | Property::Artist => Some(match_column(column)),
+        Property::Title | Property::Artist => Some(norm_col),
         _ => None,
     });
     if where_clause.is_empty() {
@@ -382,9 +394,10 @@ fn search_classical_facet(
     let sql = format!(
         "SELECT DISTINCT {col} FROM tracks
          WHERE {col} IS NOT NULL AND {col} != '' AND {where_}
-         ORDER BY {col} COLLATE NOCASE
+         ORDER BY {norm_col}
          LIMIT ?{lim} OFFSET ?{off}",
         col = column,
+        norm_col = norm_col,
         where_ = where_clause.sql,
         lim = where_clause.params.len() + 1,
         off = where_clause.params.len() + 2,
@@ -422,15 +435,14 @@ fn search_classical_facet(
     })
 }
 
-/// Static lookup for facet column SQL safe identifier. Called with a literal
-/// "composer" / "conductor" / "performer" passed in by `role_to_column`, so the
-/// switch here is exhaustive without exposing user input to the SQL string.
-fn match_column(col: &'static str) -> &'static str {
+/// Map the raw facet column to its `*_norm` shadow column (#6). Caller
+/// passes a literal so the match is exhaustive.
+fn match_column_norm(col: &'static str) -> &'static str {
     match col {
-        "composer" => "composer",
-        "conductor" => "conductor",
-        "performer" => "performer",
-        _ => "composer",
+        "composer" => "composer_norm",
+        "conductor" => "conductor_norm",
+        "performer" => "performer_norm",
+        _ => "composer_norm",
     }
 }
 
@@ -474,10 +486,13 @@ fn walk_inner(
     match p {
         Predicate::Contains { prop, value, role } => {
             if let Some(col) = column_for(prop, role.as_deref()) {
+                // #6: the column is a `*_norm` shadow, so the search value
+                // must run through the same pipeline. NOCASE is unnecessary
+                // because `for_search` already lowercases.
+                let normalized = crate::normalize::for_search(value);
                 let placeholder = out.params.len() + 1;
-                out.sql
-                    .push_str(&format!("{} LIKE ?{} COLLATE NOCASE", col, placeholder));
-                out.params.push(SqlValue::from(format!("%{}%", value)));
+                out.sql.push_str(&format!("{} LIKE ?{}", col, placeholder));
+                out.params.push(SqlValue::from(format!("%{}%", normalized)));
             }
         }
         Predicate::And(children) => emit_join(children, "AND", column_for, out),
@@ -834,6 +849,150 @@ mod tests {
         // No usable predicate → empty (we don't list all tracks just because
         // a class was specified).
         assert_eq!(r.total_matches, 0);
+    }
+
+    // ── #6: fuzzy matching (NFKD + halfwidth/fullwidth + katakana→hiragana) ──
+
+    /// Seed of 4 albums with accented / fullwidth / katakana names so the
+    /// fuzzy-Search tests have unambiguous targets. Each artist appears on
+    /// exactly one album so a hit can be attributed to the fuzzy fold.
+    fn seed_fuzzy_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        schema::migrate(&conn).unwrap();
+        for (aa, album) in [
+            ("Sigur Rós", "Takk..."),         // accent fold: café/cafe family
+            ("Björk", "Debut"),               // diaeresis
+            ("Ｂｅａｔｌｅｓ", "Ｈｅｌｐ！"), // fullwidth → halfwidth
+            ("ミユキ", "ﾌｧｲﾅﾙ"),              // katakana / halfwidth-katakana → hiragana
+        ] {
+            let aid = albums::upsert(
+                &conn,
+                &albums::AlbumKey {
+                    effective_album_artist: aa,
+                    album,
+                    compilation: false,
+                },
+                Some(aa),
+                0,
+            )
+            .unwrap();
+            tracks::upsert(
+                &conn,
+                &tracks::TrackRow {
+                    album_id: aid,
+                    path: &format!("/m/{aa}-{album}.flac"),
+                    title: Some(album),
+                    artist: Some(aa),
+                    genre: Some("Rock"),
+                    track_num: Some(1),
+                    disc_num: Some(1),
+                    duration_ms: Some(200_000),
+                    sample_rate: Some(44100),
+                    bit_depth: Some(16),
+                    channels: Some(2),
+                    bitrate: Some(1000),
+                    codec: "flac",
+                    mime_type: "audio/flac",
+                    file_size: 1234,
+                    added_at: 0,
+                    mtime: 0,
+                    composer: None,
+                    conductor: None,
+                    performer: None,
+                    year: None,
+                },
+            )
+            .unwrap();
+        }
+        albums::recalc_counts(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn fz1_album_search_strips_accents() {
+        // User types ASCII "Sigur Ros"; tag is "Sigur Rós" → fuzzy match.
+        let conn = seed_fuzzy_db();
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.album" and dc:title contains "Takk""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.containers[0].title, "Takk...");
+    }
+
+    #[test]
+    fn fz2_artist_search_strips_diacritics_either_direction() {
+        // Tag "Björk", query "Bjork" — and vice versa.
+        let conn = seed_fuzzy_db();
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.person.musicArtist" and dc:title contains "Bjork""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.containers[0].title, "Björk");
+
+        // Query with the diacritic also matches the same tag.
+        let e2 = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.person.musicArtist" and dc:title contains "Björk""#,
+        );
+        let r2 = search_tracks(&ctx(&conn), &e2, 0, 100).unwrap();
+        assert_eq!(r2.total_matches, 1);
+    }
+
+    #[test]
+    fn fz3_fullwidth_search_input_matches_fullwidth_tag() {
+        // Tag "Ｂｅａｔｌｅｓ" (fullwidth), query plain ASCII "Beatles".
+        let conn = seed_fuzzy_db();
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.person.musicArtist" and dc:title contains "Beatles""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.containers[0].title, "Ｂｅａｔｌｅｓ");
+    }
+
+    #[test]
+    fn fz4_hiragana_search_input_matches_katakana_tag() {
+        // Tag "ミユキ" (katakana), query "みゆき" (hiragana) — and the reverse.
+        let conn = seed_fuzzy_db();
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.person.musicArtist" and dc:title contains "みゆき""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.containers[0].title, "ミユキ");
+
+        // Query with katakana matches the same tag.
+        let e2 = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.person.musicArtist" and dc:title contains "ミユキ""#,
+        );
+        let r2 = search_tracks(&ctx(&conn), &e2, 0, 100).unwrap();
+        assert_eq!(r2.total_matches, 1);
+    }
+
+    #[test]
+    fn fz5_halfwidth_katakana_search_input_matches_katakana_tag() {
+        // Tag album "ﾌｧｲﾅﾙ" (halfwidth katakana), query "ファイナル" (fullwidth).
+        let conn = seed_fuzzy_db();
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.album" and dc:title contains "ファイナル""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.containers[0].title, "ﾌｧｲﾅﾙ");
+    }
+
+    #[test]
+    fn fz6_case_is_folded_at_query_and_column() {
+        // Mixed-case search input matches uppercase tag (legacy COLLATE NOCASE
+        // behavior preserved by `for_search` lowercasing both sides).
+        let conn = seed_fuzzy_db();
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.album" and dc:title contains "TAKK""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
     }
 
     // ── Pagination still works ────────────────────────────────────────────

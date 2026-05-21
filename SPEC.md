@@ -456,7 +456,23 @@ The Search action is implemented to match the subset of the UPnP search
 grammar that real control points (notably Linn / Kazoo, observed via #4)
 actually send. The parser produces a tagged predicate tree; the dispatcher
 routes queries by the `upnp:class derivedfrom` filter and runs a `LIKE
-'%X%' COLLATE NOCASE` search against the appropriate table.
+'%X%'` search against NFKD-folded shadow columns (`*_norm`, #6).
+
+**Fuzzy matching (#6).** Each searchable field is mirrored in a `*_norm`
+shadow column populated at upsert / migration time via
+`normalize::for_search`. The pipeline applies:
+
+1. NFKD decomposition (decomposes accents and folds fullwidth Latin /
+   halfwidth katakana to their canonical forms).
+2. Strip combining marks (`café` → `cafe`, `Björk` → `Bjork`).
+3. Lowercase (replaces the prior `COLLATE NOCASE`).
+4. Katakana → hiragana (`ミユキ` ⇔ `みゆき`, including halfwidth `ﾐﾕｷ`).
+
+The search input runs through the same function, so `LIKE '%norm(input)%'`
+against `column_norm` matches regardless of which side the variation is on.
+
+Out of scope (separate follow-ups): romaji conversion, edit-distance
+matching, FTS5 trigram.
 
 **Supported grammar:**
 
@@ -1346,6 +1362,17 @@ quality_in_title_show_specs = true           # include numeric specs like "Hi-Re
     (per release year, newest first) and `cat:dec` (10-year buckets,
     bucket = `(year/10)*10`). Both self-hide on libraries with zero
     populated rows.
+
+22. Search fuzzy matching (#6). NFKD-folded shadow columns
+    (`tracks.{title,artist,genre,composer,conductor,performer}_norm`,
+    `albums.{album,effective_album_artist}_norm`) populated by
+    `normalize::for_search` (NFKD → strip combining marks → lowercase →
+    katakana→hiragana). One-time migrate backfill fills existing rows;
+    `tracks::upsert` / `albums::upsert` keep them in sync on new writes.
+    Search's `LIKE '%X%'` runs against the shadow columns with the
+    search input fed through the same pipeline. SearchCriteria's
+    `read_string` now slices the source `&str` so non-ASCII query
+    values survive intact.
 
 ### Future Work
 

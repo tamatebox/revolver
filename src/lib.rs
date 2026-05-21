@@ -10,6 +10,7 @@ pub mod config_catalog;
 pub mod db;
 pub mod error;
 pub mod http;
+pub mod normalize;
 pub mod random;
 pub mod scan;
 pub mod ssdp;

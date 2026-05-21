@@ -10,20 +10,25 @@ use crate::error::Result;
 /// would silently corrupt data).
 ///
 /// Bump by +1 whenever a column is added or removed.
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// Table definitions from SPEC §3.1. Idempotent via `CREATE ... IF NOT EXISTS`.
 const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS albums (
-  id                     INTEGER PRIMARY KEY AUTOINCREMENT,
-  effective_album_artist TEXT    NOT NULL,
-  album                  TEXT    NOT NULL,
-  compilation            INTEGER NOT NULL DEFAULT 0,
-  album_artist_raw       TEXT,
-  first_seen_at          INTEGER NOT NULL,
-  track_count            INTEGER NOT NULL DEFAULT 0,
-  total_duration_ms      INTEGER NOT NULL DEFAULT 0,
-  quality                TEXT    NOT NULL DEFAULT 'unknown',
+  id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+  effective_album_artist      TEXT    NOT NULL,
+  album                       TEXT    NOT NULL,
+  compilation                 INTEGER NOT NULL DEFAULT 0,
+  album_artist_raw            TEXT,
+  first_seen_at               INTEGER NOT NULL,
+  track_count                 INTEGER NOT NULL DEFAULT 0,
+  total_duration_ms           INTEGER NOT NULL DEFAULT 0,
+  quality                     TEXT    NOT NULL DEFAULT 'unknown',
+  -- #6: NFKD-folded shadow columns used by Search (kept in sync via upsert
+  -- + bulk backfill on migrate). Allowed NULL only as a transient state
+  -- during ALTER → backfill; populated rows always carry a value.
+  album_norm                  TEXT,
+  effective_album_artist_norm TEXT,
   UNIQUE(effective_album_artist, album, compilation)
 );
 
@@ -57,7 +62,14 @@ CREATE TABLE IF NOT EXISTS tracks (
   composer       TEXT,
   conductor      TEXT,
   performer      TEXT,
-  year           INTEGER
+  year           INTEGER,
+  -- #6: NFKD-folded shadow columns. See note on albums.album_norm above.
+  title_norm     TEXT,
+  artist_norm    TEXT,
+  genre_norm     TEXT,
+  composer_norm  TEXT,
+  conductor_norm TEXT,
+  performer_norm TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_trk_album  ON tracks(album_id);
@@ -99,6 +111,16 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_column(conn, "tracks", "performer", "TEXT")?;
     // #2: release year (parsed from DATE / YEAR tag), for cat:yr / cat:dec facets.
     ensure_column(conn, "tracks", "year", "INTEGER")?;
+    // #6: NFKD-folded shadow columns for fuzzy Search. Filled in by
+    // `backfill_search_norms` below on first migration to this version.
+    ensure_column(conn, "tracks", "title_norm", "TEXT")?;
+    ensure_column(conn, "tracks", "artist_norm", "TEXT")?;
+    ensure_column(conn, "tracks", "genre_norm", "TEXT")?;
+    ensure_column(conn, "tracks", "composer_norm", "TEXT")?;
+    ensure_column(conn, "tracks", "conductor_norm", "TEXT")?;
+    ensure_column(conn, "tracks", "performer_norm", "TEXT")?;
+    ensure_column(conn, "albums", "album_norm", "TEXT")?;
+    ensure_column(conn, "albums", "effective_album_artist_norm", "TEXT")?;
     // Create indexes only after the columns are guaranteed to exist.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_trk_played ON tracks(last_played_at DESC)",
@@ -128,6 +150,10 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_trk_year ON tracks(year)",
         [],
     )?;
+    // #6: backfill the shadow columns from existing rows. One-off cost on
+    // upgrade; idempotent (only rows where the source field is non-null and
+    // the norm field is still null are touched).
+    backfill_search_norms(conn)?;
     // Write schema_version only after all ALTERs succeed. By **not writing on
     // pre-init or failure**, we keep the invariant: "migrate completed" ⇒ "schema
     // matches SCHEMA_VERSION".
@@ -169,6 +195,97 @@ pub fn ensure_compatible_or_err(conn: &Connection) -> Result<()> {
                 )))),
             ));
         }
+    }
+    Ok(())
+}
+
+/// #6: One-time backfill of NFKD shadow columns for upgraded DBs. Runs
+/// inside `migrate()` after `ensure_column` has guaranteed the targets
+/// exist. Touches only rows whose norm value is still NULL while the
+/// source column is populated, so it is safe to call repeatedly.
+fn backfill_search_norms(conn: &Connection) -> Result<()> {
+    backfill_one(
+        conn,
+        "tracks",
+        &[
+            ("title", "title_norm"),
+            ("artist", "artist_norm"),
+            ("genre", "genre_norm"),
+            ("composer", "composer_norm"),
+            ("conductor", "conductor_norm"),
+            ("performer", "performer_norm"),
+        ],
+    )?;
+    backfill_one(
+        conn,
+        "albums",
+        &[
+            ("album", "album_norm"),
+            ("effective_album_artist", "effective_album_artist_norm"),
+        ],
+    )?;
+    Ok(())
+}
+
+/// SELECT id + the listed columns, normalize each `(src, dst)` pair in Rust,
+/// and write back via batched UPDATEs. Caller-controlled column literals
+/// (never user input) make the dynamic SQL safe.
+fn backfill_one(conn: &Connection, table: &str, pairs: &[(&str, &str)]) -> Result<()> {
+    // Skip rows that already have every norm column set or have nothing to
+    // normalize (all source columns NULL). The WHERE condition lets the
+    // common case — a fresh DB or a fully backfilled DB — short-circuit
+    // without scanning the table.
+    let any_null = pairs
+        .iter()
+        .map(|(src, dst)| format!("({src} IS NOT NULL AND {dst} IS NULL)"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let src_cols = pairs.iter().map(|(s, _)| *s).collect::<Vec<_>>().join(", ");
+    let select_sql = format!("SELECT id, {src_cols} FROM {table} WHERE {any_null}");
+    let mut stmt = conn.prepare(&select_sql)?;
+    let n_pairs = pairs.len();
+    let rows: Vec<(i64, Vec<Option<String>>)> = stmt
+        .query_map([], |row| {
+            let id: i64 = row.get(0)?;
+            let mut srcs = Vec::with_capacity(n_pairs);
+            for i in 0..n_pairs {
+                srcs.push(row.get::<_, Option<String>>(i + 1)?);
+            }
+            Ok((id, srcs))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    if rows.is_empty() {
+        return Ok(());
+    }
+    // `COALESCE(dst, ?N)` keeps any pre-existing value the caller wrote in by
+    // hand and only fills NULLs. Makes the backfill safely re-runnable and
+    // lets ops manually pin a column without losing it across upgrades.
+    let set_clause = pairs
+        .iter()
+        .enumerate()
+        .map(|(i, (_, dst))| format!("{dst} = COALESCE({dst}, ?{})", i + 1))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let update_sql = format!(
+        "UPDATE {table} SET {set_clause} WHERE id = ?{}",
+        n_pairs + 1
+    );
+    let mut update = conn.prepare(&update_sql)?;
+    for (id, srcs) in rows {
+        let normed: Vec<Option<String>> = srcs
+            .into_iter()
+            .map(|s| s.map(|t| crate::normalize::for_search(&t)))
+            .collect();
+        let mut params: Vec<rusqlite::types::Value> = normed
+            .into_iter()
+            .map(|v| match v {
+                Some(s) => rusqlite::types::Value::Text(s),
+                None => rusqlite::types::Value::Null,
+            })
+            .collect();
+        params.push(rusqlite::types::Value::Integer(id));
+        update.execute(rusqlite::params_from_iter(&params))?;
     }
     Ok(())
 }
@@ -409,5 +526,125 @@ mod tests {
             params![999i64, "/tmp/x.flac", 0i64, 0i64],
         );
         assert!(result.is_err(), "FK violation should error");
+    }
+
+    // ── #6: NFKD shadow columns + backfill ──────────────────────────────
+
+    #[test]
+    fn s8_norm_columns_exist_after_migrate() {
+        let conn = open_in_memory_with_fk();
+        for (table, column) in [
+            ("tracks", "title_norm"),
+            ("tracks", "artist_norm"),
+            ("tracks", "genre_norm"),
+            ("tracks", "composer_norm"),
+            ("tracks", "conductor_norm"),
+            ("tracks", "performer_norm"),
+            ("albums", "album_norm"),
+            ("albums", "effective_album_artist_norm"),
+        ] {
+            let mut stmt = conn
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap();
+            let cols: Vec<String> = stmt
+                .query_map([], |r| r.get::<_, String>(1))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect();
+            assert!(
+                cols.contains(&column.to_string()),
+                "{table}.{column} missing: {cols:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn s9_backfill_populates_norm_from_existing_rows() {
+        // Hand-build a pre-#6 DB (no *_norm), insert data, then migrate.
+        // The backfill should fill the shadow columns from the source values.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE albums (
+               id INTEGER PRIMARY KEY,
+               effective_album_artist TEXT NOT NULL,
+               album TEXT NOT NULL,
+               compilation INTEGER NOT NULL DEFAULT 0,
+               album_artist_raw TEXT,
+               first_seen_at INTEGER NOT NULL,
+               track_count INTEGER NOT NULL DEFAULT 0,
+               total_duration_ms INTEGER NOT NULL DEFAULT 0,
+               quality TEXT NOT NULL DEFAULT 'unknown'
+             );
+             CREATE TABLE tracks (
+               id INTEGER PRIMARY KEY,
+               album_id INTEGER NOT NULL,
+               path TEXT NOT NULL UNIQUE,
+               title TEXT, artist TEXT, genre TEXT,
+               track_num INTEGER, disc_num INTEGER, duration_ms INTEGER,
+               sample_rate INTEGER, bit_depth INTEGER, channels INTEGER,
+               bitrate INTEGER, codec TEXT, mime_type TEXT, file_size INTEGER,
+               added_at INTEGER NOT NULL,
+               mtime INTEGER NOT NULL
+             );
+             INSERT INTO albums (id, effective_album_artist, album, first_seen_at)
+               VALUES (1, 'Björk', 'Café', 0);
+             INSERT INTO tracks
+               (album_id, path, title, artist, added_at, mtime)
+               VALUES (1, '/m/a.flac', 'Ｈｉｔ', 'ミユキ', 0, 0);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let (album_norm, aa_norm): (String, String) = conn
+            .query_row(
+                "SELECT album_norm, effective_album_artist_norm FROM albums WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(album_norm, "cafe");
+        assert_eq!(aa_norm, "bjork");
+
+        let (title_norm, artist_norm): (String, String) = conn
+            .query_row(
+                "SELECT title_norm, artist_norm FROM tracks WHERE path = '/m/a.flac'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(title_norm, "hit");
+        assert_eq!(artist_norm, "みゆき");
+    }
+
+    #[test]
+    fn s10_backfill_is_idempotent_and_skips_already_set() {
+        // Second migrate() call must not overwrite — guarantees a future binary
+        // can swap in a different normalize variant by re-running backfill only
+        // for the new column without disturbing the others.
+        let conn = open_in_memory_with_fk();
+        conn.execute(
+            "INSERT INTO albums (effective_album_artist, album, first_seen_at)
+             VALUES ('AA', 'Alb', 0)",
+            [],
+        )
+        .unwrap();
+        // Manually trample one norm value to simulate a custom override; the
+        // backfill should leave it alone (filter is `WHERE *_norm IS NULL`).
+        conn.execute(
+            "UPDATE albums SET album_norm = 'CUSTOM' WHERE album = 'Alb'",
+            [],
+        )
+        .unwrap();
+        // Re-run.
+        migrate(&conn).unwrap();
+        let v: String = conn
+            .query_row(
+                "SELECT album_norm FROM albums WHERE album = 'Alb'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(v, "CUSTOM");
     }
 }

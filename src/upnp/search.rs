@@ -195,24 +195,34 @@ impl<'a> Parser<'a> {
     }
 
     fn read_string(&mut self) -> Option<String> {
+        // Walks the source byte-by-byte to locate the closing `"` and `\"`
+        // escape boundaries, then copies the in-between content via slices of
+        // `self.src` (a `&str`) so multibyte UTF-8 sequences inside the string
+        // literal are preserved verbatim. The pre-#6 impl pushed individual
+        // bytes as `char`, which corrupted any non-ASCII search value
+        // ("Björk" → "BjÃ¶rk"). Delimiters (`"`, `\`) are all single-byte
+        // ASCII so byte-level seeking remains correct.
         let bytes = self.src.as_bytes();
         if self.pos >= bytes.len() || bytes[self.pos] != b'"' {
             return None;
         }
         self.pos += 1;
         let mut out = String::new();
+        let mut segment_start = self.pos;
         while self.pos < bytes.len() {
             let c = bytes[self.pos];
             if c == b'\\' && self.pos + 1 < bytes.len() && bytes[self.pos + 1] == b'"' {
+                out.push_str(&self.src[segment_start..self.pos]);
                 out.push('"');
                 self.pos += 2;
+                segment_start = self.pos;
                 continue;
             }
             if c == b'"' {
+                out.push_str(&self.src[segment_start..self.pos]);
                 self.pos += 1;
                 return Some(out);
             }
-            out.push(c as char);
             self.pos += 1;
         }
         None

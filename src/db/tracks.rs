@@ -80,6 +80,15 @@ pub struct TrackRow<'a> {
 /// Wins on incremental scans where **most rows are mtime-skipped with a few
 /// inserts**.
 pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
+    // #6: precompute fuzzy-search shadow values for any populated text field.
+    // None when the source is None — the column stays NULL so search treats
+    // "no value" the same as "explicit empty match".
+    let title_norm = row.title.map(crate::normalize::for_search);
+    let artist_norm = row.artist.map(crate::normalize::for_search);
+    let genre_norm = row.genre.map(crate::normalize::for_search);
+    let composer_norm = row.composer.map(crate::normalize::for_search);
+    let conductor_norm = row.conductor.map(crate::normalize::for_search);
+    let performer_norm = row.performer.map(crate::normalize::for_search);
     let inserted = conn.execute(
         "INSERT OR IGNORE INTO tracks (
            album_id, path, title, artist, genre,
@@ -88,9 +97,12 @@ pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
            codec, mime_type, file_size,
            added_at, mtime,
            composer, conductor, performer,
-           year
+           year,
+           title_norm, artist_norm, genre_norm,
+           composer_norm, conductor_norm, performer_norm
          )
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,
+                 ?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)",
         params![
             row.album_id,
             row.path,
@@ -113,6 +125,12 @@ pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
             row.conductor,
             row.performer,
             row.year,
+            title_norm,
+            artist_norm,
+            genre_norm,
+            composer_norm,
+            conductor_norm,
+            performer_norm,
         ],
     )?;
     if inserted == 1 {
@@ -121,26 +139,32 @@ pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
     // Existing path: overwrite everything except `added_at`
     conn.execute(
         "UPDATE tracks SET
-           album_id    = ?1,
-           title       = ?2,
-           artist      = ?3,
-           genre       = ?4,
-           track_num   = ?5,
-           disc_num    = ?6,
-           duration_ms = ?7,
-           sample_rate = ?8,
-           bit_depth   = ?9,
-           channels    = ?10,
-           bitrate     = ?11,
-           codec       = ?12,
-           mime_type   = ?13,
-           file_size   = ?14,
-           mtime       = ?15,
-           composer    = ?16,
-           conductor   = ?17,
-           performer   = ?18,
-           year        = ?19
-         WHERE path = ?20",
+           album_id       = ?1,
+           title          = ?2,
+           artist         = ?3,
+           genre          = ?4,
+           track_num      = ?5,
+           disc_num       = ?6,
+           duration_ms    = ?7,
+           sample_rate    = ?8,
+           bit_depth      = ?9,
+           channels       = ?10,
+           bitrate        = ?11,
+           codec          = ?12,
+           mime_type      = ?13,
+           file_size      = ?14,
+           mtime          = ?15,
+           composer       = ?16,
+           conductor      = ?17,
+           performer      = ?18,
+           year           = ?19,
+           title_norm     = ?20,
+           artist_norm    = ?21,
+           genre_norm     = ?22,
+           composer_norm  = ?23,
+           conductor_norm = ?24,
+           performer_norm = ?25
+         WHERE path = ?26",
         params![
             row.album_id,
             row.title,
@@ -161,6 +185,12 @@ pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
             row.conductor,
             row.performer,
             row.year,
+            title_norm,
+            artist_norm,
+            genre_norm,
+            composer_norm,
+            conductor_norm,
+            performer_norm,
             row.path,
         ],
     )?;
