@@ -150,19 +150,23 @@ fn bump_play_stats(state: &AppState, track_id: i64) {
                         if let Err(e) =
                             crate::db::albums::bump_album_last_played_at(&conn, aid, now)
                         {
-                            tracing::warn!(track_id, album_id = aid, error = %e,
-                                "failed to bump album last_played_at");
+                            tracing::warn!(
+                                album_id = aid,
+                                error = %e,
+                                "failed to bump album last_played_at"
+                            );
                         }
                     }
                 }
-                Err(e) => tracing::warn!(track_id, error = %e, "failed to update play stats"),
+                Err(e) => tracing::warn!(error = %e, "failed to update play stats"),
             }
         }
-        Err(e) => tracing::warn!(track_id, error = %e, "failed to get db conn for play stats"),
+        Err(e) => tracing::warn!(error = %e, "failed to get db conn for play stats"),
     }
 }
 
 /// `GET /stream/{track_id}` — Range-capable audio file delivery (SPEC §8.2).
+#[tracing::instrument(name = "stream", skip(state, headers), fields(track_id))]
 pub async fn stream(
     Path(track_id): Path<i64>,
     State(state): State<AppState>,
@@ -182,7 +186,6 @@ pub async fn stream(
     // Canonicalize before opening and verify the library_root prefix (security §1).
     if !path_within_library(&track.path, &state.library_root).await {
         tracing::warn!(
-            track_id,
             path = %track.path.display(),
             "track path resolves outside library_root; refusing to serve"
         );

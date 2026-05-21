@@ -3,6 +3,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
+use tracing::Instrument;
 
 use crate::db::state_kv;
 use crate::http::HttpError;
@@ -69,73 +70,78 @@ pub async fn rescan(State(state): State<AppState>) -> Result<RescanAccepted, Htt
     let pool = state.db_pool.clone();
     let progress = state.scan_progress.clone();
     let state_for_post = state.clone();
-    let scan_id_log = scan_id.clone();
+    let scan_span = tracing::info_span!("rescan", scan_id = %scan_id);
 
     // Fire-and-forget: detach the scan + post-scan side effects so the HTTP
     // response can return as soon as the permit is held.
-    tokio::spawn(async move {
-        let scan_result = tokio::task::spawn_blocking(
-            move || -> crate::error::Result<crate::scan::report::ScanReport> {
-                let _permit = permit; // Hold the permit until the task completes.
-                let mut conn = pool.get()?;
-                crate::scan::run(&mut conn, &library_root, &extensions, parallel, progress)
-            },
-        )
-        .await;
-
-        let report = match scan_result {
-            Ok(Ok(r)) => r,
-            Ok(Err(e)) => {
-                tracing::error!(scan_id = %scan_id_log, error = ?e, "background scan failed");
-                return;
-            }
-            Err(e) => {
-                tracing::error!(scan_id = %scan_id_log, error = ?e, "background scan join failed");
-                return;
-            }
-        };
-
-        // SPEC §5.1 / §9.6: if there was a structural change, deliver a SystemUpdateID
-        // propchange NOTIFY to CD subscribers (the value is already bumped inside scan::run).
-        if crate::scan::should_bump_system_update_id(&report.stats) {
-            let conn = match state_for_post.db_pool.get() {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!(error = ?e, "post-rescan: failed to get DB conn");
-                    return;
-                }
-            };
-            let id = state_kv::get(&conn, "system_update_id")
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| "1".to_string());
-            drop(conn);
-            crate::upnp::gena::broadcast_propchange(
-                &state_for_post.notify_client,
-                &state_for_post.subscriptions,
-                &state_for_post.notify_tasks,
-                crate::upnp::gena::ServiceId::ContentDirectory,
-                &[("SystemUpdateID", &id)],
+    tokio::spawn(
+        async move {
+            let scan_result = tokio::task::spawn_blocking(
+                move || -> crate::error::Result<crate::scan::report::ScanReport> {
+                    let _permit = permit; // Hold the permit until the task completes.
+                    let mut conn = pool.get()?;
+                    crate::scan::run(&mut conn, &library_root, &extensions, parallel, progress)
+                },
             )
             .await;
 
-            // On structural changes, reorder Random as well (SPEC §6.6).
-            if let Ok(conn) = state_for_post.db_pool.get() {
-                // Lock poison is rare; degrade to `None` (= no cap) rather than
-                // skipping the reshuffle entirely. Worse than the configured cap,
-                // but preserves the user-visible reshuffle behavior.
-                let limit = state_for_post
-                    .browse
-                    .read()
-                    .map(|s| s.random_albums_limit)
-                    .unwrap_or(None);
-                match state_for_post.random_state.reshuffle(&conn, limit) {
-                    Ok(n) => tracing::info!(albums = n, "post-rescan random reshuffle complete"),
-                    Err(e) => tracing::error!(error = ?e, "post-rescan reshuffle failed"),
+            let report = match scan_result {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => {
+                    tracing::error!(error = ?e, "background scan failed");
+                    return;
+                }
+                Err(e) => {
+                    tracing::error!(error = ?e, "background scan join failed");
+                    return;
+                }
+            };
+
+            // SPEC §5.1 / §9.6: if there was a structural change, deliver a SystemUpdateID
+            // propchange NOTIFY to CD subscribers (the value is already bumped inside scan::run).
+            if crate::scan::should_bump_system_update_id(&report.stats) {
+                let conn = match state_for_post.db_pool.get() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::error!(error = ?e, "post-rescan: failed to get DB conn");
+                        return;
+                    }
+                };
+                let id = state_kv::get(&conn, "system_update_id")
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "1".to_string());
+                drop(conn);
+                crate::upnp::gena::broadcast_propchange(
+                    &state_for_post.notify_client,
+                    &state_for_post.subscriptions,
+                    &state_for_post.notify_tasks,
+                    crate::upnp::gena::ServiceId::ContentDirectory,
+                    &[("SystemUpdateID", &id)],
+                )
+                .await;
+
+                // On structural changes, reorder Random as well (SPEC §6.6).
+                if let Ok(conn) = state_for_post.db_pool.get() {
+                    // Lock poison is rare; degrade to `None` (= no cap) rather than
+                    // skipping the reshuffle entirely. Worse than the configured cap,
+                    // but preserves the user-visible reshuffle behavior.
+                    let limit = state_for_post
+                        .browse
+                        .read()
+                        .map(|s| s.random_albums_limit)
+                        .unwrap_or(None);
+                    match state_for_post.random_state.reshuffle(&conn, limit) {
+                        Ok(n) => {
+                            tracing::info!(albums = n, "post-rescan random reshuffle complete")
+                        }
+                        Err(e) => tracing::error!(error = ?e, "post-rescan reshuffle failed"),
+                    }
                 }
             }
         }
-    });
+        .instrument(scan_span),
+    );
 
     Ok(RescanAccepted {
         scan_id,
