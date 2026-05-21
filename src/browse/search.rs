@@ -168,56 +168,93 @@ fn search_artists(
         }
     }
     // For Artist-class searches Linn sends `dc:title contains "X"` — meaning
-    // the artist name. Map title→effective_album_artist_norm. We also accept
-    // upnp:artist for the same reason.
-    let where_clause = walk(predicate, &|prop, _role| match prop {
+    // the artist name. #22: search the UNION of album_artist (curated, from
+    // `cat:aa`) and track-level artist (noisy, from `cat:ar`) so guests on
+    // compilations are discoverable by Search even though they only live in
+    // `tracks.artist`. Hits coming from albums emit `aa:{X}`; track-only
+    // hits emit `ar:{X}` (whose Browse handler already exists). Names
+    // present in both columns are deduped to a single `aa:` container —
+    // album_artist wins because it's the curated identity.
+    let where_aa = walk(predicate, &|prop, _role| match prop {
         Property::Title | Property::Artist => &["effective_album_artist_norm LIKE ?"],
         _ => &[],
     });
-    if where_clause.is_empty() {
+    let where_tr = walk(predicate, &|prop, _role| match prop {
+        Property::Title | Property::Artist => &["artist_norm LIKE ?"],
+        _ => &[],
+    });
+    if where_aa.is_empty() && where_tr.is_empty() {
         return Ok(empty());
     }
 
+    let n_aa = where_aa.params.len();
+    let where_tr_shifted = renumber_placeholders(&where_tr.sql, n_aa);
+    let mut params: Vec<SqlValue> = Vec::with_capacity(n_aa + where_tr.params.len() + 2);
+    params.extend(where_aa.params.iter().cloned());
+    params.extend(where_tr.params.iter().cloned());
+
     let total: i64 = {
         let sql = format!(
-            "SELECT COUNT(*) FROM (SELECT DISTINCT effective_album_artist FROM albums WHERE {})",
-            where_clause.sql
+            "SELECT COUNT(*) FROM (
+               SELECT effective_album_artist AS name FROM albums WHERE {aa_where}
+               UNION
+               SELECT artist AS name FROM tracks
+                 WHERE artist IS NOT NULL AND artist != '' AND {tr_where}
+             )",
+            aa_where = where_aa.sql,
+            tr_where = where_tr_shifted,
         );
-        ctx.conn.query_row(
-            &sql,
-            rusqlite::params_from_iter(&where_clause.params),
-            |r| r.get(0),
-        )?
+        ctx.conn
+            .query_row(&sql, rusqlite::params_from_iter(&params), |r| r.get(0))?
     };
 
-    let mut list_params = where_clause.params.clone();
-    list_params.push(SqlValue::from(count as i64));
-    list_params.push(SqlValue::from(start as i64));
+    // UNION ALL + GROUP BY so we can keep `is_aa` per row and decide the
+    // container kind. MIN(name_norm) is identical across rows with the same
+    // name, so it's a stable sort key.
+    let lim_idx = params.len() + 1;
+    let off_idx = params.len() + 2;
     let sql = format!(
-        "SELECT DISTINCT effective_album_artist
-         FROM albums
-         WHERE {}
-         ORDER BY effective_album_artist_norm
+        "SELECT name, MAX(is_aa) AS is_aa
+         FROM (
+           SELECT effective_album_artist AS name,
+                  effective_album_artist_norm AS name_norm,
+                  1 AS is_aa
+             FROM albums WHERE {aa_where}
+           UNION ALL
+           SELECT artist AS name, artist_norm AS name_norm, 0 AS is_aa
+             FROM tracks
+             WHERE artist IS NOT NULL AND artist != '' AND {tr_where}
+         )
+         GROUP BY name
+         ORDER BY MIN(name_norm)
          LIMIT ?{lim} OFFSET ?{off}",
-        where_clause.sql,
-        lim = where_clause.params.len() + 1,
-        off = where_clause.params.len() + 2,
+        aa_where = where_aa.sql,
+        tr_where = where_tr_shifted,
+        lim = lim_idx,
+        off = off_idx,
     );
+    params.push(SqlValue::from(count as i64));
+    params.push(SqlValue::from(start as i64));
+
     let mut stmt = ctx.conn.prepare_cached(&sql)?;
-    let names: Vec<String> = stmt
-        .query_map(rusqlite::params_from_iter(&list_params), |r| {
-            r.get::<_, String>(0)
+    let rows: Vec<(String, i64)> = stmt
+        .query_map(rusqlite::params_from_iter(&params), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
         })?
         .filter_map(|r| r.ok())
         .collect();
 
-    let containers: Vec<Container> = names
+    let containers: Vec<Container> = rows
         .into_iter()
-        .map(|name| {
-            let id = ObjectId::AlbumArtist(name.clone());
+        .map(|(name, is_aa)| {
+            let (id, parent) = if is_aa == 1 {
+                (ObjectId::AlbumArtist(name.clone()), "cat:aa")
+            } else {
+                (ObjectId::Artist(name.clone()), "cat:ar")
+            };
             Container {
                 id: object_id::encode(&id),
-                parent_id: "cat:aa".to_string(),
+                parent_id: parent.to_string(),
                 title: name,
                 upnp_class: "object.container.person.musicArtist",
                 child_count: None,
@@ -815,6 +852,41 @@ mod tests {
         let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
         assert_eq!(r.total_matches, 1);
         assert_eq!(r.didl.containers[0].title, "Various Artists");
+    }
+
+    // #22: Artist-class search also hits track-level `tracks.artist`. A guest
+    // who never appears as an album_artist still surfaces — as an `ar:`
+    // container so its existing Browse handler (`albums_by_artist_children`)
+    // takes over from there.
+
+    #[test]
+    fn st2c_artist_class_finds_track_only_artist_as_ar_container() {
+        // "Some Singer" is a track-level artist on the VA compilation, never
+        // an album_artist. Pre-#22 this returned 0 results.
+        let conn = seed_db();
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.person.musicArtist" and dc:title contains "Some Singer""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.containers[0].title, "Some Singer");
+        assert!(r.didl.containers[0].id.starts_with("ar:"));
+        assert_eq!(r.didl.containers[0].parent_id, "cat:ar");
+    }
+
+    #[test]
+    fn st2d_artist_class_dedupes_album_and_track_artist_to_aa() {
+        // "The Beatles" appears as both an album_artist (Abbey Road) and
+        // every Abbey Road track's artist. UNION + GROUP BY collapses to one
+        // row; MAX(is_aa) routes it to `aa:`, not `ar:`.
+        let conn = seed_db();
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.person.musicArtist" and dc:title contains "Beatles""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        assert!(r.didl.containers[0].id.starts_with("aa:"));
+        assert_eq!(r.didl.containers[0].parent_id, "cat:aa");
     }
 
     // ── Track class with OR composition (Linn's Track / global field) ─────
