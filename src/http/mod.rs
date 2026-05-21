@@ -84,10 +84,17 @@ pub fn router(state: AppState) -> Router {
 /// CSRF defense middleware for `/admin/*` (security §D1).
 ///
 /// Decision logic:
-/// - If an `Origin` header is present, parse its host and require it to be a
-///   **LAN private IP** (RFC1918 / loopback / link-local). Public IPs / DNS names are rejected.
+/// - If an `Origin` header is present, parse its host and accept only if it is
+///   one of: a **LAN private IP** literal (RFC1918 / loopback / link-local),
+///   `localhost`, or an **mDNS hostname** (`*.local`). Public DNS names are
+///   rejected — including domains that DNS-rebind to LAN IPs, since the
+///   request's Origin still reflects the attacker hostname.
 /// - If `Origin` is absent, pass through (normal requests from curl / non-`mode: 'no-cors'`
 ///   fetch, local CLI tools, and same-origin fetches from the admin UI itself).
+///
+/// `.local` is safe to allowlist: mDNS resolution is link-local (handled by the
+/// host's mDNS responder, not the recursive resolver), so a public attacker
+/// domain cannot be rebinded to a `.local` name.
 ///
 /// This implementation focuses on "CSRF from a malicious external web page"
 /// (blocking on the assumption that an attacker page cannot forge Origin).
@@ -108,22 +115,21 @@ async fn admin_csrf_guard(request: Request, next: Next) -> Response {
                 return (StatusCode::FORBIDDEN, "unparseable origin").into_response();
             }
         };
-        // Pass if parseable as an IP literal and in LAN range. Otherwise reject.
-        let lan_ok = match host.parse::<IpAddr>() {
+        let host_ok = match host.parse::<IpAddr>() {
             Ok(IpAddr::V4(v4)) => v4.is_private() || v4.is_loopback() || v4.is_link_local(),
             Ok(IpAddr::V6(v6)) => {
                 v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local()
             }
-            Err(_) => host.eq_ignore_ascii_case("localhost"),
+            Err(_) => host.eq_ignore_ascii_case("localhost") || is_mdns_hostname(host),
         };
-        if !lan_ok {
+        if !host_ok {
             tracing::warn!(
                 origin = %origin,
                 "rejecting /admin/* request from non-LAN origin (CSRF defense)"
             );
             return (
                 StatusCode::FORBIDDEN,
-                "admin endpoints restricted to LAN origins",
+                "admin endpoints restricted to LAN / .local origins",
             )
                 .into_response();
         }
@@ -144,6 +150,15 @@ fn extract_origin_host(origin: &str) -> Option<&str> {
     } else {
         Some(host)
     }
+}
+
+/// True when `host` is a non-empty mDNS name (`foo.local` / `foo.local.`).
+/// Substring matches like `evil.fakelocal` are rejected.
+fn is_mdns_hostname(host: &str) -> bool {
+    let trimmed = host.strip_suffix('.').unwrap_or(host);
+    let suffix = ".local";
+    trimmed.len() > suffix.len()
+        && trimmed[trimmed.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
 }
 
 /// Unified error type returned from HTTP handlers. `IntoResponse` maps it to
@@ -263,6 +278,61 @@ mod tests {
                     .method("POST")
                     .uri("/admin/rescan")
                     .header("origin", "https://evil.example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn ag_mdns1_is_mdns_hostname_matches_dotlocal_and_trailing_dot() {
+        assert!(is_mdns_hostname("revolver.local"));
+        assert!(is_mdns_hostname("revolver.local."));
+        assert!(is_mdns_hostname("Some-Host.LOCAL"));
+        assert!(is_mdns_hostname("a.b.local"));
+    }
+
+    #[test]
+    fn ag_mdns2_is_mdns_hostname_rejects_substrings_and_empty() {
+        assert!(!is_mdns_hostname("evil.fakelocal"));
+        assert!(!is_mdns_hostname(".local"));
+        assert!(!is_mdns_hostname(".local."));
+        assert!(!is_mdns_hostname("local"));
+        assert!(!is_mdns_hostname(""));
+        assert!(!is_mdns_hostname("example.com"));
+    }
+
+    #[tokio::test]
+    async fn ag6_admin_with_mdns_origin_passes_through() {
+        // Browsers visiting the admin UI via mDNS (macOS Bonjour default) send
+        // Origin: http://<host>.local:<port> — must be accepted.
+        let app = ok_app();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/stats")
+                    .header("origin", "http://kotetsu.local:8200")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn ag7_admin_with_fakelocal_origin_rejected() {
+        // `evil.fakelocal` ends in "local" but not ".local" — must NOT pass.
+        let app = ok_app();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/rescan")
+                    .header("origin", "https://evil.fakelocal")
                     .body(Body::empty())
                     .unwrap(),
             )
