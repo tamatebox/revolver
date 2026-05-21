@@ -84,19 +84,9 @@
     .settings-row.row-array .settings-key { padding-top: 0.3em; }
     .settings-key {
       display: flex;
-      flex-direction: column;
-      gap: 0.15em;
-    }
-    .settings-label {
-      display: flex;
       align-items: center;
       gap: 0.35em;
       font-weight: 500;
-    }
-    .settings-key-name {
-      font-family: monospace;
-      font-size: 0.78em;
-      color: var(--muted);
     }
     .modified-dot {
       display: inline-block;
@@ -164,27 +154,28 @@
     }
     .array-item {
       display: grid;
-      grid-template-columns: auto 1fr auto auto;
+      grid-template-columns: auto auto 1fr;
       align-items: center;
       gap: 0.4em;
-      padding: 0.15em 0;
+      padding: 0.2em 0.2em;
       font-size: 0.9em;
+      border: 1px solid transparent;
+      border-radius: 3px;
     }
+    .array-item.draggable { cursor: grab; }
+    .array-item.draggable:active { cursor: grabbing; }
+    .array-item.dragging { opacity: 0.4; }
+    .array-item.drop-before { border-top-color: var(--accent); }
+    .array-item.drop-after { border-bottom-color: var(--accent); }
     .array-item.unknown .array-item-label {
       color: var(--danger);
       font-style: italic;
     }
-    .array-item button.move {
-      padding: 0.05em 0.45em;
-      margin: 0;
-      font-size: 0.85em;
-      border-radius: 3px;
-      line-height: 1;
-    }
-    .array-item button.move:disabled {
-      opacity: 0.25;
-      border-color: var(--border);
+    .drag-handle {
       color: var(--muted);
+      font-size: 1em;
+      line-height: 1;
+      user-select: none;
     }
     .array-divider {
       border: none;
@@ -502,11 +493,12 @@
     // Two-group reorder-and-toggle widget for `browse.top_level` (and any
     // future array-valued key with a `choices` catalog).
     //
-    // - Enabled list = state.current, rendered in the saved order with
-    //   up/down buttons and an "uncheck to hide" checkbox.
+    // - Enabled list = state.current, rendered in saved order. Drag any row
+    //   to reorder; uncheck to hide. Drop position is decided by whether the
+    //   pointer is in the top or bottom half of the target row, so the same
+    //   gesture can move items up, down, or to the very end.
     // - Disabled list = catalog choices not in state.current, in catalog
-    //   order, with a "check to show" checkbox; checking appends to the end
-    //   of the enabled list.
+    //   order. Check to append to the bottom of the enabled list.
     // - IDs in state.current that aren't in the catalog ("unknown") render
     //   with their raw ID and a warning style — unchecking is the cure.
     function buildArrayControl(state, entry) {
@@ -514,6 +506,18 @@
       wrap.className = "array-control";
 
       const labelById = new Map(entry.choices.map((c) => [c.id, c.label]));
+
+      // dragstart fires before we read state.current in handlers, so we
+      // stash the source index on the widget itself rather than relying on
+      // dataTransfer (Firefox requires non-empty dataTransfer.setData, but
+      // round-tripping through it is more fragile than this closure).
+      let dragFromIdx = null;
+
+      function clearDropHints() {
+        wrap.querySelectorAll(".array-item.drop-before, .array-item.drop-after").forEach((el) => {
+          el.classList.remove("drop-before", "drop-after");
+        });
+      }
 
       function render() {
         wrap.innerHTML = "";
@@ -523,7 +527,7 @@
 
         const enabledLabel = document.createElement("div");
         enabledLabel.className = "array-group-label";
-        enabledLabel.textContent = "Visible (top to bottom)";
+        enabledLabel.textContent = "Visible (drag to reorder)";
         wrap.appendChild(enabledLabel);
 
         const enabledList = document.createElement("div");
@@ -537,11 +541,19 @@
         enabled.forEach((id, idx) => {
           const known = labelById.has(id);
           const item = document.createElement("div");
-          item.className = "array-item" + (known ? "" : " unknown");
+          item.className = "array-item draggable" + (known ? "" : " unknown");
+          item.draggable = true;
+
+          const handle = document.createElement("span");
+          handle.className = "drag-handle";
+          handle.textContent = "⠿";
+          handle.title = "drag to reorder";
+          item.appendChild(handle);
 
           const cb = document.createElement("input");
           cb.type = "checkbox";
           cb.checked = true;
+          cb.draggable = false;
           cb.addEventListener("change", () => {
             state.current = state.current.filter((x) => x !== id);
             render();
@@ -554,35 +566,48 @@
           labelSpan.textContent = known ? labelById.get(id) : `${id} (unknown)`;
           item.appendChild(labelSpan);
 
-          const upBtn = document.createElement("button");
-          upBtn.type = "button";
-          upBtn.className = "move";
-          upBtn.textContent = "↑";
-          upBtn.title = "move up";
-          upBtn.disabled = idx === 0;
-          upBtn.addEventListener("click", () => {
+          item.addEventListener("dragstart", (ev) => {
+            dragFromIdx = idx;
+            item.classList.add("dragging");
+            // Firefox requires setData to actually start a drag.
+            ev.dataTransfer.effectAllowed = "move";
+            ev.dataTransfer.setData("text/plain", String(idx));
+          });
+          item.addEventListener("dragend", () => {
+            dragFromIdx = null;
+            item.classList.remove("dragging");
+            clearDropHints();
+          });
+          item.addEventListener("dragover", (ev) => {
+            if (dragFromIdx === null) return;
+            ev.preventDefault();
+            ev.dataTransfer.dropEffect = "move";
+            const rect = item.getBoundingClientRect();
+            const before = ev.clientY < rect.top + rect.height / 2;
+            clearDropHints();
+            item.classList.add(before ? "drop-before" : "drop-after");
+          });
+          item.addEventListener("dragleave", () => {
+            item.classList.remove("drop-before", "drop-after");
+          });
+          item.addEventListener("drop", (ev) => {
+            if (dragFromIdx === null) return;
+            ev.preventDefault();
+            const before = item.classList.contains("drop-before");
+            const from = dragFromIdx;
+            const to = idx + (before ? 0 : 1);
+            // Skip no-op moves (dropping on the source's own zones).
+            if (from === to || from === to - 1) {
+              clearDropHints();
+              return;
+            }
             const next = state.current.slice();
-            [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+            const [moved] = next.splice(from, 1);
+            next.splice(from < to ? to - 1 : to, 0, moved);
             state.current = next;
             render();
             refreshDirty();
           });
-          item.appendChild(upBtn);
-
-          const downBtn = document.createElement("button");
-          downBtn.type = "button";
-          downBtn.className = "move";
-          downBtn.textContent = "↓";
-          downBtn.title = "move down";
-          downBtn.disabled = idx === enabled.length - 1;
-          downBtn.addEventListener("click", () => {
-            const next = state.current.slice();
-            [next[idx + 1], next[idx]] = [next[idx], next[idx + 1]];
-            state.current = next;
-            render();
-            refreshDirty();
-          });
-          item.appendChild(downBtn);
 
           enabledList.appendChild(item);
         });
@@ -605,6 +630,9 @@
             const item = document.createElement("div");
             item.className = "array-item";
 
+            // Empty span keeps grid alignment with the draggable rows above.
+            item.appendChild(document.createElement("span"));
+
             const cb = document.createElement("input");
             cb.type = "checkbox";
             cb.checked = false;
@@ -619,10 +647,6 @@
             labelSpan.className = "array-item-label";
             labelSpan.textContent = choice.label;
             item.appendChild(labelSpan);
-
-            // Empty placeholders to keep grid alignment with the enabled rows.
-            item.appendChild(document.createElement("span"));
-            item.appendChild(document.createElement("span"));
 
             disabledList.appendChild(item);
           });
@@ -664,18 +688,11 @@
 
           const keyDiv = document.createElement("div");
           keyDiv.className = "settings-key";
-          const labelLine = document.createElement("div");
-          labelLine.className = "settings-label";
           const dot = document.createElement("span");
           dot.className = "modified-dot";
           dot.title = "modified from default";
-          labelLine.appendChild(dot);
-          labelLine.appendChild(document.createTextNode(e.label || e.key));
-          keyDiv.appendChild(labelLine);
-          const keyNameLine = document.createElement("div");
-          keyNameLine.className = "settings-key-name";
-          keyNameLine.textContent = e.key;
-          keyDiv.appendChild(keyNameLine);
+          keyDiv.appendChild(dot);
+          keyDiv.appendChild(document.createTextNode(e.label || e.key));
           row.appendChild(keyDiv);
 
           const state = {
