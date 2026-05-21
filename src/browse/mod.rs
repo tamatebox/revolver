@@ -66,7 +66,7 @@ pub struct BrowseContext<'a> {
     /// test helpers that build a `BrowseContext`) so tests can inject a fixed value.
     pub now_secs: i64,
     /// Tuning values from `config.toml [browse]` (`recently_added_limit` /
-    /// `random_albums_limit` / `quality_categories`).
+    /// `random_albums_limit` / `top_level`).
     pub settings: &'a BrowseSettings,
 }
 

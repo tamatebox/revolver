@@ -77,8 +77,7 @@ Edit `config.toml`. The most relevant fields:
 | `browse.recently_added_limit` | Item cap for "Recently Added" |
 | `browse.recently_added_max_age_days` | Optional age cap (omit / `null` = show all by recency) |
 | `browse.random_albums_limit` | Cap for "Random Albums" |
-| `browse.quality_categories` | Show Hi-Res / Lossy / Mixed top-level categories |
-| `browse.top_level` | Selection + order of top-level facets (drop entries to hide; unknown / empty entries are silently skipped) |
+| `browse.top_level` | Selection + order of top-level facets (drop entries to hide — including Hi-Res / Lossy / Mixed Quality; unknown / empty entries are silently skipped) |
 
 See [`config.toml.example`](config.toml.example) for the full schema.
 

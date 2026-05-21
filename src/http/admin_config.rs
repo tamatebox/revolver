@@ -247,7 +247,6 @@ parallel = 1
 [browse]
 recently_added_limit = 50
 random_albums_limit  = 100
-quality_categories   = true
 "#,
         )
         .unwrap();
@@ -399,7 +398,7 @@ quality_categories   = true
                     .body(Body::from(
                         json!({
                             "browse.recently_added_limit": 150,
-                            "browse.quality_categories": 1
+                            "browse.top_level": "not-an-array"
                         })
                         .to_string(),
                     ))

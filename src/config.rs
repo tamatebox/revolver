@@ -61,7 +61,6 @@ pub struct Browse {
     #[serde(default)]
     pub recently_added_max_age_days: Option<u32>,
     pub random_albums_limit: usize,
-    pub quality_categories: bool,
 
     /// Selection and order of top-level facets surfaced at ObjectID "0"
     /// (SPEC §6.2, issue #8). Unknown / disabled entries are silently
@@ -153,7 +152,6 @@ mod tests {
 
         assert_eq!(cfg.browse.recently_added_limit, 50);
         assert_eq!(cfg.browse.random_albums_limit, 100);
-        assert!(cfg.browse.quality_categories);
         assert!(!cfg.browse.quality_in_title);
     }
 
@@ -175,7 +173,6 @@ parallel = 1
 [browse]
 recently_added_limit = 10
 random_albums_limit = 10
-quality_categories = true
 "#;
         assert!(toml::from_str::<Config>(text).is_err());
     }
@@ -199,7 +196,6 @@ parallel = 1
 [browse]
 recently_added_limit = 10
 random_albums_limit = 10
-quality_categories = true
 "#;
         assert!(toml::from_str::<Config>(text).is_err());
     }
@@ -224,7 +220,6 @@ parallel = 1
 [browse]
 recently_added_limit = 10
 random_albums_limit = 10
-quality_categories = true
 "#;
         let cfg: Config = toml::from_str(text).expect("port 0 should parse");
         assert_eq!(cfg.server.http_port, 0);
@@ -265,7 +260,6 @@ parallel = 4
 [browse]
 recently_added_limit = 10
 random_albums_limit = 20
-quality_categories = false
 "#;
         let cfg: Config = toml::from_str(text).expect("minimal config must parse");
 

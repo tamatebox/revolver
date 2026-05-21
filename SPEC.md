@@ -656,8 +656,8 @@ Rules:
 - Iteration order follows the array.
 - Unknown IDs are silently dropped (so adding new facets in a future version
   does not require a config rewrite).
-- `cat:hires` / `cat:lossy` / `cat:mixed` still respect
-  `browse.quality_categories = false` (the higher-level switch wins).
+- Hi-Res / Lossy / Mixed Quality are surfaced solely by this list — drop
+  the `cat:hires` / `cat:lossy` / `cat:mixed` entries to hide them.
 - `cat:cm` / `cat:cn` / `cat:pf` still self-hide on libraries with no
   populated rows (#9 keeps the root clean on non-classical collections).
 - Duplicates after the first occurrence are dropped.
@@ -1301,12 +1301,9 @@ rescan_interval_minutes = 0
 recently_added_limit = 50
 random_albums_limit = 100
 
-# Whether to surface the quality categories (Hi-Res / Lossy / Mixed) at the top level.
-# Recommended on. Empty categories are hidden automatically.
-quality_categories = true
-
 # Selection and order of top-level facets at ObjectID "0" (#8, §6.2).
-# Default: the full canonical list. Unknown / disabled entries are silently dropped.
+# Default: the full canonical list. Drop entries (including Hi-Res / Lossy /
+# Mixed if you don't want quality categories) to hide them.
 # top_level = ["cat:aa", "cat:al", "cat:recent", "cat:played", "cat:hires"]
 
 # Optional: decorate album titles with a quality tag.

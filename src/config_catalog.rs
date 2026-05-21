@@ -184,17 +184,6 @@ pub const CATALOG: &[ConfigKey] = &[
         validate: validate_positive_int,
         choices: None,
     },
-    ConfigKey {
-        key: "browse.quality_categories",
-        label: "Show quality categories",
-        description: "Show Hi-Res / Lossy / Mixed Quality categories at the root. \
-                      Acts as a master switch even when they are listed in \
-                      Top-level categories.",
-        reload_tier: ReloadTier::Runtime,
-        default: default_quality_categories,
-        validate: validate_bool,
-        choices: None,
-    },
 ];
 
 pub fn find(key: &str) -> Option<&'static ConfigKey> {
@@ -216,10 +205,6 @@ fn default_random_albums_limit(c: &Config) -> Value {
     serde_json::json!(c.browse.random_albums_limit)
 }
 
-fn default_quality_categories(c: &Config) -> Value {
-    serde_json::json!(c.browse.quality_categories)
-}
-
 fn default_top_level(c: &Config) -> Value {
     serde_json::json!(c.browse.top_level)
 }
@@ -237,12 +222,6 @@ fn validate_nullable_positive_int(v: &Value) -> std::result::Result<Value, Strin
         return Ok(Value::Null);
     }
     validate_positive_int(v)
-}
-
-fn validate_bool(v: &Value) -> std::result::Result<Value, String> {
-    v.as_bool()
-        .map(Value::from)
-        .ok_or_else(|| "must be a boolean".to_string())
 }
 
 /// Validator for `browse.top_level` (#8): array of strings, deduped while
@@ -307,9 +286,6 @@ pub fn build_browse_settings(defaults: &DefaultsMap, conn: &Connection) -> Resul
     let random = effective_value(defaults, conn, "browse.random_albums_limit")?
         .as_u64()
         .unwrap_or(1) as usize;
-    let quality_categories = effective_value(defaults, conn, "browse.quality_categories")?
-        .as_bool()
-        .unwrap_or(true);
     let top_level = effective_value(defaults, conn, "browse.top_level")?
         .as_array()
         .map(|arr| {
@@ -322,7 +298,6 @@ pub fn build_browse_settings(defaults: &DefaultsMap, conn: &Connection) -> Resul
         recently,
         max_age_days,
         random,
-        quality_categories,
         top_level,
     ))
 }
@@ -350,7 +325,6 @@ parallel = 1
 [browse]
 recently_added_limit = 50
 random_albums_limit  = 100
-quality_categories   = true
 "#,
         )
         .unwrap()
@@ -382,15 +356,6 @@ quality_categories   = true
     }
 
     #[test]
-    fn cc4_validate_bool_accepts_only_booleans() {
-        assert_eq!(
-            validate_bool(&serde_json::json!(true)).unwrap(),
-            serde_json::json!(true)
-        );
-        assert!(validate_bool(&serde_json::json!(1)).is_err());
-    }
-
-    #[test]
     fn cc5_effective_value_falls_back_to_default_when_no_override() {
         let conn = open_in_memory();
         let defaults = precompute_defaults(&sample_config());
@@ -412,11 +377,9 @@ quality_categories   = true
         let conn = open_in_memory();
         let defaults = precompute_defaults(&sample_config());
         config_overrides::set(&conn, "browse.recently_added_limit", "200", 0).unwrap();
-        config_overrides::set(&conn, "browse.quality_categories", "false", 0).unwrap();
         let s = build_browse_settings(&defaults, &conn).unwrap();
         assert_eq!(s.recently_added_limit, 200);
         assert_eq!(s.random_albums_limit, 100); // toml default
-        assert!(!s.quality_categories);
     }
 
     #[test]
@@ -426,7 +389,6 @@ quality_categories   = true
         let s = build_browse_settings(&defaults, &conn).unwrap();
         assert_eq!(s.recently_added_limit, 50);
         assert_eq!(s.random_albums_limit, 100);
-        assert!(s.quality_categories);
         assert_eq!(s.top_level, crate::config::default_top_level());
     }
 

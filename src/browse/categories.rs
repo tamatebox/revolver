@@ -14,8 +14,6 @@ use crate::upnp::object_id::{self, ObjectId};
 ///
 /// Iteration order follows the configured array. For each entry:
 /// - Unknown IDs are silently dropped (forward-compat with future facets).
-/// - `cat:hires` / `cat:lossy` / `cat:mixed` are dropped when
-///   `browse.quality_categories = false`.
 /// - `cat:cm` / `cat:cn` / `cat:pf` are dropped when the library has no
 ///   rows in the corresponding column (keeps the root clean on
 ///   non-classical libraries — #9).
@@ -43,8 +41,8 @@ pub fn root_children(ctx: &BrowseContext) -> ChildrenResult {
 }
 
 /// Builds one root-level facet container. Returns `None` if the ID is unknown
-/// or the facet is currently disabled (`quality_categories=false`, or a
-/// classical column with no populated rows).
+/// or the facet is currently disabled (a classical / year column with no
+/// populated rows).
 fn build_root_facet(ctx: &BrowseContext, id: &str) -> Option<Container> {
     match id {
         "cat:aa" => Some(plain_cat("cat:aa", "0", "Album Artist")),
@@ -54,15 +52,9 @@ fn build_root_facet(ctx: &BrowseContext, id: &str) -> Option<Container> {
         "cat:recent" => Some(plain_cat("cat:recent", "0", "Recently Added")),
         "cat:played" => Some(plain_cat("cat:played", "0", "Recently Played")),
         "cat:random" => Some(plain_cat("cat:random", "0", "Random Albums")),
-        "cat:hires" if ctx.settings.quality_categories => {
-            Some(plain_cat("cat:hires", "0", "Hi-Res Albums"))
-        }
-        "cat:lossy" if ctx.settings.quality_categories => {
-            Some(plain_cat("cat:lossy", "0", "Lossy Albums"))
-        }
-        "cat:mixed" if ctx.settings.quality_categories => {
-            Some(plain_cat("cat:mixed", "0", "Mixed Quality"))
-        }
+        "cat:hires" => Some(plain_cat("cat:hires", "0", "Hi-Res Albums")),
+        "cat:lossy" => Some(plain_cat("cat:lossy", "0", "Lossy Albums")),
+        "cat:mixed" => Some(plain_cat("cat:mixed", "0", "Mixed Quality")),
         "cat:cm" if facet_has_any(ctx, "composer").unwrap_or(false) => {
             Some(plain_cat("cat:cm", "0", "Composer"))
         }
@@ -448,49 +440,17 @@ mod tests {
     }
 
     #[test]
-    fn cr1_root_children_with_quality_default_returns_10() {
+    fn cr1_root_children_with_defaults_returns_10() {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::schema::migrate(&conn).unwrap();
         let rs = RandomState::new();
-        let s = BrowseSettings::default(); // quality_categories = true
+        let s = BrowseSettings::default();
         let r = root_children(&ctx_with(&conn, &rs, &s));
         assert_eq!(r.total_matches, 10);
         let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
         assert!(ids.contains(&"cat:hires"));
         assert!(ids.contains(&"cat:lossy"));
         assert!(ids.contains(&"cat:mixed"));
-    }
-
-    #[test]
-    fn cr2_root_children_with_quality_off_omits_quality_categories() {
-        let conn = Connection::open_in_memory().unwrap();
-        crate::db::schema::migrate(&conn).unwrap();
-        let rs = RandomState::new();
-        let s = BrowseSettings::from_parts(
-            50,
-            None,
-            100,
-            false, // quality_categories = false
-            crate::config::default_top_level(),
-        );
-        let r = root_children(&ctx_with(&conn, &rs, &s));
-        assert_eq!(r.total_matches, 7);
-        let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
-        assert!(!ids.contains(&"cat:hires"));
-        assert!(!ids.contains(&"cat:lossy"));
-        assert!(!ids.contains(&"cat:mixed"));
-        // The remaining 7 are required.
-        for expected in [
-            "cat:aa",
-            "cat:ar",
-            "cat:al",
-            "cat:gn",
-            "cat:recent",
-            "cat:played",
-            "cat:random",
-        ] {
-            assert!(ids.contains(&expected), "missing {}", expected);
-        }
     }
 
     #[test]
@@ -503,7 +463,6 @@ mod tests {
             50,
             None,
             100,
-            true,
             vec![
                 "cat:recent".into(),
                 "cat:al".into(),
@@ -528,7 +487,6 @@ mod tests {
             50,
             None,
             100,
-            true,
             vec![
                 "cat:aa".into(),
                 "cat:nope".into(),
@@ -542,25 +500,13 @@ mod tests {
     }
 
     #[test]
-    fn cr5_quality_categories_false_overrides_top_level() {
-        // When quality_categories = false, hi-res / lossy / mixed must not
-        // appear even if explicitly listed in top_level.
+    fn cr5_quality_categories_hidden_via_top_level() {
+        // Hi-Res / Lossy / Mixed are surfaced solely by `top_level`. Dropping
+        // them from the array hides them at the root.
         let conn = Connection::open_in_memory().unwrap();
         crate::db::schema::migrate(&conn).unwrap();
         let rs = RandomState::new();
-        let s = BrowseSettings::from_parts(
-            50,
-            None,
-            100,
-            false, // quality_categories = false
-            vec![
-                "cat:aa".into(),
-                "cat:hires".into(),
-                "cat:lossy".into(),
-                "cat:mixed".into(),
-                "cat:al".into(),
-            ],
-        );
+        let s = BrowseSettings::from_parts(50, None, 100, vec!["cat:aa".into(), "cat:al".into()]);
         let r = root_children(&ctx_with(&conn, &rs, &s));
         let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, vec!["cat:aa", "cat:al"]);
@@ -577,7 +523,6 @@ mod tests {
             50,
             None,
             100,
-            true,
             vec![
                 "cat:aa".into(),
                 "cat:cm".into(),
@@ -595,7 +540,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::schema::migrate(&conn).unwrap();
         let rs = RandomState::new();
-        let s = BrowseSettings::from_parts(50, None, 100, true, vec![]);
+        let s = BrowseSettings::from_parts(50, None, 100, vec![]);
         let r = root_children(&ctx_with(&conn, &rs, &s));
         assert_eq!(r.total_matches, 0);
         assert!(r.didl.containers.is_empty());
