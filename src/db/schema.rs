@@ -10,7 +10,7 @@ use crate::error::Result;
 /// would silently corrupt data).
 ///
 /// Bump by +1 whenever a column is added or removed.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// Table definitions from SPEC §3.1. Idempotent via `CREATE ... IF NOT EXISTS`.
 const SCHEMA_SQL: &str = r#"
@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS tracks (
   last_played_at INTEGER,
   composer       TEXT,
   conductor      TEXT,
-  performer      TEXT
+  performer      TEXT,
+  year           INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_trk_album  ON tracks(album_id);
@@ -96,6 +97,8 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_column(conn, "tracks", "composer", "TEXT")?;
     ensure_column(conn, "tracks", "conductor", "TEXT")?;
     ensure_column(conn, "tracks", "performer", "TEXT")?;
+    // #2: release year (parsed from DATE / YEAR tag), for cat:yr / cat:dec facets.
+    ensure_column(conn, "tracks", "year", "INTEGER")?;
     // Create indexes only after the columns are guaranteed to exist.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_trk_played ON tracks(last_played_at DESC)",
@@ -119,6 +122,10 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     )?;
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_trk_performer ON tracks(performer)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_trk_year ON tracks(year)",
         [],
     )?;
     // Write schema_version only after all ALTERs succeed. By **not writing on

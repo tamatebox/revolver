@@ -64,6 +64,8 @@ pub struct TrackRow<'a> {
     pub composer: Option<&'a str>,
     pub conductor: Option<&'a str>,
     pub performer: Option<&'a str>,
+    /// #2: release year. NULL when absent or unparseable.
+    pub year: Option<i32>,
 }
 
 /// Upsert into tracks (SPEC §4.3). On `path` UNIQUE conflict, update everything
@@ -85,9 +87,10 @@ pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
            sample_rate, bit_depth, channels, bitrate,
            codec, mime_type, file_size,
            added_at, mtime,
-           composer, conductor, performer
+           composer, conductor, performer,
+           year
          )
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
         params![
             row.album_id,
             row.path,
@@ -109,6 +112,7 @@ pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
             row.composer,
             row.conductor,
             row.performer,
+            row.year,
         ],
     )?;
     if inserted == 1 {
@@ -134,8 +138,9 @@ pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
            mtime       = ?15,
            composer    = ?16,
            conductor   = ?17,
-           performer   = ?18
-         WHERE path = ?19",
+           performer   = ?18,
+           year        = ?19
+         WHERE path = ?20",
         params![
             row.album_id,
             row.title,
@@ -155,6 +160,7 @@ pub fn upsert(conn: &Connection, row: &TrackRow) -> Result<UpsertOutcome> {
             row.composer,
             row.conductor,
             row.performer,
+            row.year,
             row.path,
         ],
     )?;
@@ -255,6 +261,7 @@ mod tests {
             composer: None,
             conductor: None,
             performer: None,
+            year: None,
         }
     }
 

@@ -51,6 +51,7 @@ pub fn default_track_row<'a>(album_id: i64, path: &'a str, added_at: i64) -> Tra
         composer: None,
         conductor: None,
         performer: None,
+        year: None,
     }
 }
 

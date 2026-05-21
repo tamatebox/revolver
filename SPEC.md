@@ -44,7 +44,7 @@ A simple UPnP/DLNA MediaServer for personal music libraries.
 | Tag editing | Not planned. Read-only. |
 | Genre cleanup / tag normalization | Not planned. Tag values are used as-is. |
 | Composer / Conductor / Orchestra facet | Implemented (§6.2, #9). |
-| Year / Decade facet | Future work. |
+| Year / Decade facet | Implemented (§6.2, #2). |
 
 ---
 
@@ -585,7 +585,9 @@ Name segments are **URL-safe base64** to avoid `/`, spaces, non-ASCII, etc.
 ├── "cat:mixed"   Mixed Quality        ← quality category
 ├── "cat:cm"      Composer             ← #9, surfaced only when populated
 ├── "cat:cn"      Conductor            ← #9
-└── "cat:pf"      Performer            ← #9
+├── "cat:pf"      Performer            ← #9
+├── "cat:yr"      Year                 ← #2, surfaced only when populated
+└── "cat:dec"     Decade               ← #2, surfaced only when populated
 ```
 
 `cat:recent` returns an **album list directly**, sorted by
@@ -667,6 +669,10 @@ Rules:
 | `cm:...` | Composer name (#9) | `object.container.person.musicArtist` |
 | `cn:...` | Conductor name (#9) | `object.container.person.musicArtist` |
 | `pf:...` | Performer name (#9) | `object.container.person.musicArtist` |
+| `cat:yr` | "Year" (#2) | `object.container` |
+| `cat:dec` | "Decade" (#2) | `object.container` |
+| `yr:YYYY` | "YYYY" (#2) | `object.container` |
+| `dec:YYYY` | "YYYYs" (#2) | `object.container` |
 | `alb:...` | Album name | `object.container.album.musicAlbum` |
 
 Track items use `object.item.audioItem.musicTrack`.
@@ -692,6 +698,10 @@ Track items use `object.item.audioItem.musicTrack`.
 | children of `cm:{name}` (#9) | `SELECT a.id, a.album, a.effective_album_artist, a.track_count FROM albums a WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id AND t.composer = ?) ORDER BY a.album LIMIT ? OFFSET ?` |
 | `cat:cn` / `cn:{name}` (#9) | Same shape as composer, against `tracks.conductor`. |
 | `cat:pf` / `pf:{name}` (#9) | Same shape as composer, against `tracks.performer`. |
+| children of `cat:yr` (#2) | `SELECT DISTINCT year FROM tracks WHERE year IS NOT NULL ORDER BY year DESC LIMIT ? OFFSET ?` |
+| children of `yr:{Y}` (#2) | `SELECT a.id, a.album, a.effective_album_artist, a.track_count FROM albums a WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id AND t.year = ?) ORDER BY a.album LIMIT ? OFFSET ?` |
+| children of `cat:dec` (#2) | `SELECT DISTINCT (year/10)*10 AS d FROM tracks WHERE year IS NOT NULL ORDER BY d DESC LIMIT ? OFFSET ?` |
+| children of `dec:{D}` (#2) | Same shape as `yr:`, predicate `t.year BETWEEN ? AND ?+9`. |
 | children of `cat:lossy` | `SELECT id, album, effective_album_artist FROM albums WHERE quality = 'lossy' ORDER BY effective_album_artist, album LIMIT ? OFFSET ?` |
 | children of `cat:mixed` | `SELECT id, album, effective_album_artist FROM albums WHERE quality = 'mixed' ORDER BY effective_album_artist, album LIMIT ? OFFSET ?` |
 
@@ -1330,6 +1340,13 @@ quality_in_title_show_specs = true           # include numeric specs like "Hi-Re
       the disc's tracks. MinimServer ships the same pattern (§7.2, §14).
       Single-disc albums skip both — no divider, no `originalDiscNumber`.
 
+21. Year / Decade facets (#2). New nullable `tracks.year` column read via
+    lofty (`Year` / `RecordingDate` → DATE / YEAR / TDRC / ©day, parsed
+    from "YYYY" and "YYYY-MM-DD" forms). New top-level facets `cat:yr`
+    (per release year, newest first) and `cat:dec` (10-year buckets,
+    bucket = `(year/10)*10`). Both self-hide on libraries with zero
+    populated rows.
+
 ### Future Work
 
 - Verify gapless playback on additional renderers (real-hardware testing).
@@ -1339,7 +1356,6 @@ quality_in_title_show_specs = true           # include numeric specs like "Hi-Re
   rescan (`scan.watch`, `scan.rescan_interval_minutes`; spec'd in §4.4 / §8.5
   / §12, not yet implemented).
 - `dc:title` quality decoration (opt-in, §10.5).
-- Year facet.
 - OpenHome Info subscribe for accurate playback timing (refines the stream-
   hit counter in §6.8).
 

@@ -1,9 +1,12 @@
 //! UPnP ObjectID encode / decode (SPEC §6.1).
 //!
 //! - `0`           — root
-//! - `cat:aa/ar/al/gn/recent/played/random/hires/lossy/mixed/cm/cn/pf` — category (fixed)
+//! - `cat:aa/ar/al/gn/recent/played/random/hires/lossy/mixed/cm/cn/pf/yr/dec` — category (fixed)
 //! - `aa:<b64>` `ar:<b64>` `gn:<b64>` `cm:<b64>` `cn:<b64>` `pf:<b64>` —
 //!   name-based (URL-safe base64, no padding)
+//! - `yr:<YYYY>` `dec:<YYYY>` — year / decade buckets (#2). Plain integer,
+//!   no base64 (digits are URL-safe). `dec:<YYYY>` is the first year of
+//!   the decade (e.g. `dec:1980` covers 1980-1989).
 //! - `alb:<id>` `trk:<id>` — albums.id / tracks.id
 //! - `disc:<album_id>:<disc>` — multi-disc divider container (#17)
 
@@ -29,12 +32,21 @@ pub enum ObjectId {
     CatCn,
     /// #9: classical facet — performers (orchestra / ensemble).
     CatPf,
+    /// #2: per-release-year facet.
+    CatYr,
+    /// #2: per-decade facet (buckets of 10 calendar years).
+    CatDec,
     AlbumArtist(String),
     Artist(String),
     Genre(String),
     Composer(String),
     Conductor(String),
     Performer(String),
+    /// #2: a single release year. Used as parent for albums released in that year.
+    Year(i32),
+    /// #2: a 10-year bucket starting at this year (e.g. `Decade(1980)`
+    /// covers 1980-1989).
+    Decade(i32),
     Album(i64),
     Track(i64),
     /// Disc-divider container injected into a multi-disc album's child list.
@@ -62,6 +74,8 @@ pub fn parse(s: &str) -> Option<ObjectId> {
         "cat:cm" => Some(ObjectId::CatCm),
         "cat:cn" => Some(ObjectId::CatCn),
         "cat:pf" => Some(ObjectId::CatPf),
+        "cat:yr" => Some(ObjectId::CatYr),
+        "cat:dec" => Some(ObjectId::CatDec),
         _ => {
             if let Some(rest) = s.strip_prefix("aa:") {
                 decode_name(rest).map(ObjectId::AlbumArtist)
@@ -75,6 +89,17 @@ pub fn parse(s: &str) -> Option<ObjectId> {
                 decode_name(rest).map(ObjectId::Conductor)
             } else if let Some(rest) = s.strip_prefix("pf:") {
                 decode_name(rest).map(ObjectId::Performer)
+            } else if let Some(rest) = s.strip_prefix("yr:") {
+                rest.parse().ok().map(ObjectId::Year)
+            } else if let Some(rest) = s.strip_prefix("dec:") {
+                // Reject non-decade-aligned values to keep IDs canonical
+                // (`dec:1985` must round-trip through the encoder).
+                let y: i32 = rest.parse().ok()?;
+                if y % 10 == 0 {
+                    Some(ObjectId::Decade(y))
+                } else {
+                    None
+                }
             } else if let Some(rest) = s.strip_prefix("alb:") {
                 rest.parse().ok().map(ObjectId::Album)
             } else if let Some(rest) = s.strip_prefix("trk:") {
@@ -108,12 +133,16 @@ pub fn encode(id: &ObjectId) -> String {
         ObjectId::CatCm => "cat:cm".to_string(),
         ObjectId::CatCn => "cat:cn".to_string(),
         ObjectId::CatPf => "cat:pf".to_string(),
+        ObjectId::CatYr => "cat:yr".to_string(),
+        ObjectId::CatDec => "cat:dec".to_string(),
         ObjectId::AlbumArtist(name) => format!("aa:{}", encode_name(name)),
         ObjectId::Artist(name) => format!("ar:{}", encode_name(name)),
         ObjectId::Genre(name) => format!("gn:{}", encode_name(name)),
         ObjectId::Composer(name) => format!("cm:{}", encode_name(name)),
         ObjectId::Conductor(name) => format!("cn:{}", encode_name(name)),
         ObjectId::Performer(name) => format!("pf:{}", encode_name(name)),
+        ObjectId::Year(y) => format!("yr:{}", y),
+        ObjectId::Decade(y) => format!("dec:{}", y),
         ObjectId::Album(id) => format!("alb:{}", id),
         ObjectId::Track(id) => format!("trk:{}", id),
         ObjectId::Disc { album_id, disc } => format!("disc:{}:{}", album_id, disc),
@@ -176,6 +205,19 @@ mod tests {
         assert_eq!(parse("alb:notnum"), None);
         assert_eq!(parse("aa:not!valid!base64"), None);
         assert_eq!(parse(""), None);
+    }
+
+    #[test]
+    fn o7_year_and_decade_parse_and_round_trip() {
+        // #2: yr:YYYY parses any positive integer; dec:YYYY accepts only
+        // decade-aligned values so encoded ↔ parsed is canonical.
+        assert_eq!(parse("cat:yr"), Some(ObjectId::CatYr));
+        assert_eq!(parse("cat:dec"), Some(ObjectId::CatDec));
+        assert_eq!(parse("yr:1969"), Some(ObjectId::Year(1969)));
+        assert_eq!(parse("dec:1980"), Some(ObjectId::Decade(1980)));
+        // Non-decade-aligned input is rejected (would not survive round-trip).
+        assert_eq!(parse("dec:1985"), None);
+        assert_eq!(parse("yr:notnum"), None);
     }
 
     #[test]
@@ -257,6 +299,10 @@ mod tests {
             ObjectId::Composer("J.S. Bach".to_string()),
             ObjectId::Conductor("Karajan".to_string()),
             ObjectId::Performer("Berlin Philharmonic".to_string()),
+            ObjectId::CatYr,
+            ObjectId::CatDec,
+            ObjectId::Year(1969),
+            ObjectId::Decade(1980),
         ];
         for case in cases {
             let encoded = encode(&case);

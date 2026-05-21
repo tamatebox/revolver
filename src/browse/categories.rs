@@ -72,6 +72,14 @@ fn build_root_facet(ctx: &BrowseContext, id: &str) -> Option<Container> {
         "cat:pf" if facet_has_any(ctx, "performer").unwrap_or(false) => {
             Some(plain_cat("cat:pf", "0", "Performer"))
         }
+        // #2: Year / Decade self-hide when zero tracks carry a release year.
+        // Libraries with no DATE / YEAR tag set never see these in the root.
+        "cat:yr" if facet_has_any(ctx, "year").unwrap_or(false) => {
+            Some(plain_cat("cat:yr", "0", "Year"))
+        }
+        "cat:dec" if facet_has_any(ctx, "year").unwrap_or(false) => {
+            Some(plain_cat("cat:dec", "0", "Decade"))
+        }
         _ => None,
     }
 }
@@ -258,6 +266,68 @@ fn facet_has_any(ctx: &BrowseContext, column: &'static str) -> Result<bool> {
     Ok(any != 0)
 }
 
+/// #2: Under `cat:yr` — DISTINCT release year as `Year` containers, newest first.
+pub fn years_children(ctx: &BrowseContext, start: usize, count: usize) -> Result<ChildrenResult> {
+    let total: i64 = ctx.conn.query_row(
+        "SELECT COUNT(DISTINCT year) FROM tracks WHERE year IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    let mut stmt = ctx.conn.prepare_cached(
+        "SELECT DISTINCT year FROM tracks
+         WHERE year IS NOT NULL
+         ORDER BY year DESC LIMIT ?1 OFFSET ?2",
+    )?;
+    let years: Vec<i32> = stmt
+        .query_map(params![count as i64, start as i64], |r| r.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    let containers = years
+        .into_iter()
+        .map(|y| year_container(&ObjectId::Year(y), "cat:yr", &y.to_string()))
+        .collect();
+    Ok(ChildrenResult {
+        didl: DidlOutput {
+            containers,
+            items: vec![],
+            nodes: vec![],
+        },
+        total_matches: total as usize,
+    })
+}
+
+/// #2: Under `cat:dec` — DISTINCT 10-year buckets, newest first. Buckets are
+/// computed as `(year / 10) * 10` so 1985 → 1980. Negative years cannot occur
+/// (the tag parser rejects them at scan time).
+pub fn decades_children(ctx: &BrowseContext, start: usize, count: usize) -> Result<ChildrenResult> {
+    let total: i64 = ctx.conn.query_row(
+        "SELECT COUNT(DISTINCT (year/10)*10) FROM tracks WHERE year IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    let mut stmt = ctx.conn.prepare_cached(
+        "SELECT DISTINCT (year/10)*10 AS d FROM tracks
+         WHERE year IS NOT NULL
+         ORDER BY d DESC LIMIT ?1 OFFSET ?2",
+    )?;
+    let decades: Vec<i32> = stmt
+        .query_map(params![count as i64, start as i64], |r| r.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    let containers = decades
+        .into_iter()
+        .map(|d| year_container(&ObjectId::Decade(d), "cat:dec", &format!("{d}s")))
+        .collect();
+    Ok(ChildrenResult {
+        didl: DidlOutput {
+            containers,
+            items: vec![],
+            nodes: vec![],
+        },
+        total_matches: total as usize,
+    })
+}
+
 /// Under `cat:gn`: DISTINCT track genre.
 pub fn genres_children(ctx: &BrowseContext, start: usize, count: usize) -> Result<ChildrenResult> {
     let total: i64 = ctx.conn.query_row(
@@ -335,6 +405,20 @@ pub(crate) fn genre_container(id: &ObjectId, parent: &str, name: &str) -> Contai
         parent_id: parent.to_string(),
         title: name.to_string(),
         upnp_class: "object.container.genre.musicGenre",
+        child_count: None,
+        artist: None,
+        album_art_uri: None,
+    }
+}
+
+/// #2: container for a year (`yr:YYYY`) or decade (`dec:YYYY`). Plain
+/// `object.container` (no canonical UPnP class for year buckets).
+pub(crate) fn year_container(id: &ObjectId, parent: &str, label: &str) -> Container {
+    Container {
+        id: object_id::encode(id),
+        parent_id: parent.to_string(),
+        title: label.to_string(),
+        upnp_class: "object.container",
         child_count: None,
         artist: None,
         album_art_uri: None,
@@ -515,5 +599,93 @@ mod tests {
         let r = root_children(&ctx_with(&conn, &rs, &s));
         assert_eq!(r.total_matches, 0);
         assert!(r.didl.containers.is_empty());
+    }
+
+    // ── #2: Year / Decade facets ────────────────────────────────────────
+
+    fn seed_year_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::schema::migrate(&conn).unwrap();
+        let aid = crate::db::albums::upsert(
+            &conn,
+            &crate::db::albums::AlbumKey {
+                effective_album_artist: "AA",
+                album: "Alb",
+                compilation: false,
+            },
+            None,
+            0,
+        )
+        .unwrap();
+        // 1969 + 1985 + 1987 → years [1987, 1985, 1969]; decades [1980, 1960].
+        for (path, year) in [
+            ("/m/a.flac", 1969),
+            ("/m/b.flac", 1985),
+            ("/m/c.flac", 1987),
+        ] {
+            let mut row = crate::browse::test_helpers::default_track_row(aid, path, 0);
+            row.year = Some(year);
+            crate::db::tracks::upsert(&conn, &row).unwrap();
+        }
+        crate::db::albums::recalc_counts(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn yr1_years_children_returns_distinct_years_desc() {
+        let conn = seed_year_db();
+        let rs = RandomState::new();
+        let s = BrowseSettings::default();
+        let r = years_children(&ctx_with(&conn, &rs, &s), 0, 100).unwrap();
+        assert_eq!(r.total_matches, 3);
+        let titles: Vec<&str> = r.didl.containers.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(titles, vec!["1987", "1985", "1969"]);
+        // IDs round-trip through ObjectId.
+        let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["yr:1987", "yr:1985", "yr:1969"]);
+    }
+
+    #[test]
+    fn yr2_decades_children_returns_distinct_decades_desc() {
+        let conn = seed_year_db();
+        let rs = RandomState::new();
+        let s = BrowseSettings::default();
+        let r = decades_children(&ctx_with(&conn, &rs, &s), 0, 100).unwrap();
+        assert_eq!(r.total_matches, 2);
+        let titles: Vec<&str> = r.didl.containers.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(titles, vec!["1980s", "1960s"]);
+        let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["dec:1980", "dec:1960"]);
+    }
+
+    #[test]
+    fn yr3_root_self_hides_year_and_decade_when_empty() {
+        // No tracks → cat:yr / cat:dec must be silently dropped from root.
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::migrate(&conn).unwrap();
+        let rs = RandomState::new();
+        let s = BrowseSettings::default();
+        let r = root_children(&ctx_with(&conn, &rs, &s));
+        let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
+        assert!(
+            !ids.contains(&"cat:yr"),
+            "empty year column must hide cat:yr"
+        );
+        assert!(
+            !ids.contains(&"cat:dec"),
+            "empty year column must hide cat:dec"
+        );
+    }
+
+    #[test]
+    fn yr4_root_surfaces_year_and_decade_when_any_track_has_year() {
+        let conn = seed_year_db();
+        let rs = RandomState::new();
+        let s = BrowseSettings::default();
+        let r = root_children(&ctx_with(&conn, &rs, &s));
+        let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
+        assert!(ids.contains(&"cat:yr"));
+        assert!(ids.contains(&"cat:dec"));
     }
 }

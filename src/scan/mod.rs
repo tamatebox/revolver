@@ -266,6 +266,7 @@ fn run_inner(
                     composer: t.tags.composer.as_deref(),
                     conductor: t.tags.conductor.as_deref(),
                     performer: t.tags.performer.as_deref(),
+                    year: t.tags.year,
                 },
             )?;
             match outcome {

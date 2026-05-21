@@ -185,6 +185,94 @@ pub fn albums_by_performer_children(
     })
 }
 
+/// #2: Under `yr:{YYYY}` — albums with at least one track in that year.
+/// Same `WHERE EXISTS` shape as `albums_by_genre_children`, using
+/// `tracks(year)` index.
+pub fn albums_by_year_children(
+    ctx: &BrowseContext,
+    year: i32,
+    start: usize,
+    count: usize,
+) -> Result<ChildrenResult> {
+    let total: i64 = ctx.conn.query_row(
+        "SELECT COUNT(*) FROM albums a
+         WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id AND t.year = ?1)",
+        params![year],
+        |r| r.get(0),
+    )?;
+    let mut stmt = ctx.conn.prepare_cached(
+        "SELECT a.id, a.album, a.effective_album_artist, a.track_count
+         FROM albums a
+         WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id AND t.year = ?1)
+         ORDER BY a.album LIMIT ?2 OFFSET ?3",
+    )?;
+    let rows: Vec<(i64, String, String, i64)> = stmt
+        .query_map(params![year, count as i64, start as i64], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    let parent_id = object_id::encode(&ObjectId::Year(year));
+    let containers = rows
+        .into_iter()
+        .map(|(id, album, aa, tc)| album_container(ctx, id, &album, &aa, tc, &parent_id))
+        .collect();
+    Ok(ChildrenResult {
+        didl: DidlOutput {
+            containers,
+            items: vec![],
+            nodes: vec![],
+        },
+        total_matches: total as usize,
+    })
+}
+
+/// #2: Under `dec:{YYYY}` — albums released in the 10-year window
+/// `[decade, decade+9]`. The caller is responsible for passing a
+/// decade-aligned year (already enforced by `ObjectId::parse`).
+pub fn albums_by_decade_children(
+    ctx: &BrowseContext,
+    decade: i32,
+    start: usize,
+    count: usize,
+) -> Result<ChildrenResult> {
+    let lo = decade;
+    let hi = decade + 9;
+    let total: i64 = ctx.conn.query_row(
+        "SELECT COUNT(*) FROM albums a
+         WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id
+                         AND t.year BETWEEN ?1 AND ?2)",
+        params![lo, hi],
+        |r| r.get(0),
+    )?;
+    let mut stmt = ctx.conn.prepare_cached(
+        "SELECT a.id, a.album, a.effective_album_artist, a.track_count
+         FROM albums a
+         WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = a.id
+                         AND t.year BETWEEN ?1 AND ?2)
+         ORDER BY a.album LIMIT ?3 OFFSET ?4",
+    )?;
+    let rows: Vec<(i64, String, String, i64)> = stmt
+        .query_map(params![lo, hi, count as i64, start as i64], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    let parent_id = object_id::encode(&ObjectId::Decade(decade));
+    let containers = rows
+        .into_iter()
+        .map(|(id, album, aa, tc)| album_container(ctx, id, &album, &aa, tc, &parent_id))
+        .collect();
+    Ok(ChildrenResult {
+        didl: DidlOutput {
+            containers,
+            items: vec![],
+            nodes: vec![],
+        },
+        total_matches: total as usize,
+    })
+}
+
 fn albums_by_facet_children(
     ctx: &BrowseContext,
     column: &'static str,

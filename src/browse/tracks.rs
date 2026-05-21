@@ -431,6 +431,7 @@ mod tests {
                     composer: None,
                     conductor: None,
                     performer: None,
+                    year: None,
                 },
             )
             .unwrap();

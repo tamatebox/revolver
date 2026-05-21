@@ -72,7 +72,9 @@ pub struct BrowseContext<'a> {
 
 /// BrowseMetadata dispatch. Returns a single object.
 pub fn browse_metadata(ctx: &BrowseContext, id: &ObjectId) -> Result<DidlOutput> {
-    use categories::{genre_container, person_container, plain_cat, root_container};
+    use categories::{
+        genre_container, person_container, plain_cat, root_container, year_container,
+    };
     match id {
         ObjectId::Root => Ok(single(root_container(ctx))),
         ObjectId::CatAa => Ok(single(plain_cat("cat:aa", "0", "Album Artist"))),
@@ -88,12 +90,16 @@ pub fn browse_metadata(ctx: &BrowseContext, id: &ObjectId) -> Result<DidlOutput>
         ObjectId::CatCm => Ok(single(plain_cat("cat:cm", "0", "Composer"))),
         ObjectId::CatCn => Ok(single(plain_cat("cat:cn", "0", "Conductor"))),
         ObjectId::CatPf => Ok(single(plain_cat("cat:pf", "0", "Performer"))),
+        ObjectId::CatYr => Ok(single(plain_cat("cat:yr", "0", "Year"))),
+        ObjectId::CatDec => Ok(single(plain_cat("cat:dec", "0", "Decade"))),
         ObjectId::AlbumArtist(name) => Ok(single(person_container(id, "cat:aa", name))),
         ObjectId::Artist(name) => Ok(single(person_container(id, "cat:ar", name))),
         ObjectId::Genre(name) => Ok(single(genre_container(id, "cat:gn", name))),
         ObjectId::Composer(name) => Ok(single(person_container(id, "cat:cm", name))),
         ObjectId::Conductor(name) => Ok(single(person_container(id, "cat:cn", name))),
         ObjectId::Performer(name) => Ok(single(person_container(id, "cat:pf", name))),
+        ObjectId::Year(y) => Ok(single(year_container(id, "cat:yr", &y.to_string()))),
+        ObjectId::Decade(d) => Ok(single(year_container(id, "cat:dec", &format!("{d}s")))),
         ObjectId::Album(album_id) => albums::album_metadata(ctx, *album_id),
         ObjectId::Track(track_id) => tracks::track_metadata(ctx, *track_id),
         ObjectId::Disc { album_id, disc } => {
@@ -130,12 +136,16 @@ pub fn browse_children(
         ObjectId::CatCm => categories::composers_children(ctx, start, count),
         ObjectId::CatCn => categories::conductors_children(ctx, start, count),
         ObjectId::CatPf => categories::performers_children(ctx, start, count),
+        ObjectId::CatYr => categories::years_children(ctx, start, count),
+        ObjectId::CatDec => categories::decades_children(ctx, start, count),
         ObjectId::AlbumArtist(name) => albums::albums_by_aa_children(ctx, name, start, count),
         ObjectId::Artist(name) => albums::albums_by_artist_children(ctx, name, start, count),
         ObjectId::Genre(name) => albums::albums_by_genre_children(ctx, name, start, count),
         ObjectId::Composer(name) => albums::albums_by_composer_children(ctx, name, start, count),
         ObjectId::Conductor(name) => albums::albums_by_conductor_children(ctx, name, start, count),
         ObjectId::Performer(name) => albums::albums_by_performer_children(ctx, name, start, count),
+        ObjectId::Year(y) => albums::albums_by_year_children(ctx, *y, start, count),
+        ObjectId::Decade(d) => albums::albums_by_decade_children(ctx, *d, start, count),
         ObjectId::Album(album_id) => tracks::album_tracks_children(ctx, *album_id, start, count),
         ObjectId::Disc { album_id, disc } => {
             tracks::disc_tracks_children(ctx, *album_id, *disc, start, count)
@@ -213,6 +223,7 @@ mod tests {
                 composer: None,
                 conductor: None,
                 performer: None,
+                year: Some(1969),
             },
         )
         .unwrap();
@@ -239,6 +250,7 @@ mod tests {
                 composer: None,
                 conductor: None,
                 performer: None,
+                year: Some(1969),
             },
         )
         .unwrap();
@@ -265,6 +277,7 @@ mod tests {
                 composer: None,
                 conductor: None,
                 performer: None,
+                year: Some(2001),
             },
         )
         .unwrap();
@@ -287,11 +300,13 @@ mod tests {
     }
 
     #[test]
-    fn br1_root_children_returns_ten_categories() {
+    fn br1_root_children_returns_twelve_categories() {
+        // Seed has track years (Beatles 1969 + VA 2001) so cat:yr / cat:dec
+        // self-show; plus 10 non-classical / non-year facets = 12 total.
         let conn = seed_db();
         let result = browse_children(&ctx(&conn), &ObjectId::Root, 0, 100).unwrap();
-        assert_eq!(result.total_matches, 10);
-        assert_eq!(result.didl.containers.len(), 10);
+        assert_eq!(result.total_matches, 12);
+        assert_eq!(result.didl.containers.len(), 12);
         let ids: Vec<String> = result
             .didl
             .containers
@@ -309,6 +324,8 @@ mod tests {
             "cat:hires",
             "cat:lossy",
             "cat:mixed",
+            "cat:yr",
+            "cat:dec",
         ] {
             assert!(ids.contains(&expected.to_string()), "missing {}", expected);
         }
@@ -450,5 +467,49 @@ mod tests {
         assert_eq!(r.total_matches, 0);
         assert!(r.didl.containers.is_empty());
         assert!(r.didl.items.is_empty());
+    }
+
+    // ── #2: Year / Decade dispatch ──────────────────────────────────────
+
+    #[test]
+    fn br12_cat_yr_returns_both_distinct_years() {
+        // Seed has Beatles 1969 + VA 2001 → cat:yr enumerates both, newest first.
+        let conn = seed_db();
+        let r = browse_children(&ctx(&conn), &ObjectId::CatYr, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 2);
+        let titles: Vec<&str> = r.didl.containers.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(titles, vec!["2001", "1969"]);
+    }
+
+    #[test]
+    fn br13_year_children_filters_to_matching_album() {
+        // yr:1969 returns Abbey Road only; yr:2001 returns Hits only.
+        let conn = seed_db();
+        let r = browse_children(&ctx(&conn), &ObjectId::Year(1969), 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.containers[0].title, "Abbey Road");
+        let r2 = browse_children(&ctx(&conn), &ObjectId::Year(2001), 0, 100).unwrap();
+        assert_eq!(r2.total_matches, 1);
+        assert_eq!(r2.didl.containers[0].title, "Hits");
+    }
+
+    #[test]
+    fn br14_decade_children_bucketizes_by_ten_years() {
+        // dec:1960 picks up 1969; dec:2000 picks up 2001.
+        let conn = seed_db();
+        let r = browse_children(&ctx(&conn), &ObjectId::Decade(1960), 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.containers[0].title, "Abbey Road");
+        let r2 = browse_children(&ctx(&conn), &ObjectId::Decade(2000), 0, 100).unwrap();
+        assert_eq!(r2.total_matches, 1);
+        assert_eq!(r2.didl.containers[0].title, "Hits");
+    }
+
+    #[test]
+    fn br15_year_with_no_matches_returns_zero() {
+        let conn = seed_db();
+        let r = browse_children(&ctx(&conn), &ObjectId::Year(1500), 0, 100).unwrap();
+        assert_eq!(r.total_matches, 0);
+        assert!(r.didl.containers.is_empty());
     }
 }

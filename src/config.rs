@@ -101,6 +101,8 @@ pub fn default_top_level() -> Vec<String> {
         "cat:cm",
         "cat:cn",
         "cat:pf",
+        "cat:yr",
+        "cat:dec",
     ]
     .iter()
     .map(|s| s.to_string())

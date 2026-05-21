@@ -23,6 +23,10 @@ pub struct TrackTags {
     pub conductor: Option<String>,
     /// PERFORMER / TOPE / ©prf — orchestra / ensemble (#9).
     pub performer: Option<String>,
+    /// Release year (#2). Parsed from DATE / YEAR / TDRC / ©day tags.
+    /// Stored as a 4-digit calendar year; non-positive / out-of-range values
+    /// (≤ 0 or ≥ 9999) are dropped at parse time.
+    pub year: Option<i32>,
     pub duration_ms: Option<u64>,
     pub sample_rate: Option<u32>,
     pub bit_depth: Option<u8>,
@@ -95,6 +99,7 @@ pub fn read(path: &Path) -> Result<TrackTags, TagError> {
         composer,
         conductor,
         performer,
+        year,
     ) = if let Some(t) = tag {
         (
             t.get_string(ItemKey::TrackTitle).map(String::from),
@@ -111,10 +116,16 @@ pub fn read(path: &Path) -> Result<TrackTags, TagError> {
             t.get_string(ItemKey::Composer).map(String::from),
             t.get_string(ItemKey::Conductor).map(String::from),
             t.get_string(ItemKey::Performer).map(String::from),
+            // ItemKey::Year covers MP3 TDRC / TYER, Vorbis DATE / YEAR, and M4A ©day.
+            // Falls back to RecordingDate when Year is absent (some MP4 / Vorbis
+            // writers populate only the dated variant).
+            t.get_string(ItemKey::Year)
+                .or_else(|| t.get_string(ItemKey::RecordingDate))
+                .and_then(parse_year),
         )
     } else {
         (
-            None, None, None, None, None, false, None, None, None, None, None,
+            None, None, None, None, None, false, None, None, None, None, None, None,
         )
     };
 
@@ -130,6 +141,7 @@ pub fn read(path: &Path) -> Result<TrackTags, TagError> {
         composer,
         conductor,
         performer,
+        year,
         duration_ms: Some(props.duration().as_millis() as u64),
         sample_rate: props.sample_rate(),
         bit_depth,
@@ -144,6 +156,27 @@ pub fn read(path: &Path) -> Result<TrackTags, TagError> {
 /// Extract the leading u32 from a "current/total" string such as "3/12".
 fn parse_num_prefix(s: &str) -> Option<u32> {
     s.split('/').next()?.trim().parse().ok()
+}
+
+/// Extract a 4-digit year from common DATE / YEAR / TDRC representations
+/// (#2). Accepts:
+///
+/// - bare "YYYY"
+/// - ISO "YYYY-MM-DD"
+/// - lofty's "(YYYY)" wrapper
+///
+/// Returns `None` for empty, non-numeric, or out-of-range (≤ 0 or ≥ 9999)
+/// values — junk like "0" or "9999" is treated as missing rather than
+/// polluting cat:yr.
+fn parse_year(s: &str) -> Option<i32> {
+    let s = s.trim().trim_start_matches('(').trim_end_matches(')');
+    let head = s.split(['-', '/', ' ', '.']).next()?;
+    let y: i32 = head.parse().ok()?;
+    if (1..9999).contains(&y) {
+        Some(y)
+    } else {
+        None
+    }
 }
 
 /// Normalize the `cpil` / `TCMP` / `COMPILATION` flag representations to bool.
@@ -245,6 +278,29 @@ mod tests {
         assert_eq!(parse_num_prefix("abc"), None);
         assert_eq!(parse_num_prefix("/12"), None); // empty prefix
         assert_eq!(parse_num_prefix("-1"), None); // out of u32 range
+    }
+
+    // #2: DATE / YEAR tag variants seen across rippers. Wrong parsing here
+    // splits a year across cat:yr ("1969" vs "1969-09-26") or silently drops
+    // legitimate releases.
+    #[test]
+    fn py1_parse_year_accepts_bare_and_iso_forms() {
+        assert_eq!(parse_year("1969"), Some(1969));
+        assert_eq!(parse_year("1969-09-26"), Some(1969));
+        assert_eq!(parse_year(" 1969 "), Some(1969));
+        assert_eq!(parse_year("(1969)"), Some(1969));
+        assert_eq!(parse_year("1969/09/26"), Some(1969));
+        assert_eq!(parse_year("1969.09.26"), Some(1969));
+    }
+
+    #[test]
+    fn py2_parse_year_rejects_empty_and_out_of_range() {
+        assert_eq!(parse_year(""), None);
+        assert_eq!(parse_year("not-a-year"), None);
+        assert_eq!(parse_year("0"), None);
+        assert_eq!(parse_year("-1"), None);
+        assert_eq!(parse_year("9999"), None); // common "unknown" sentinel
+        assert_eq!(parse_year("99999"), None);
     }
 
     // SPEC §7.3 MIME mapping. Linn reads the codec from protocolInfo,
