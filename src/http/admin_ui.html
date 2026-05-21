@@ -63,7 +63,7 @@
     .status.error { color: var(--danger); }
 
     /* Settings form */
-    .settings-section { margin-bottom: 0.75em; }
+    .settings-section { margin-bottom: 1em; }
     .settings-section h3 {
       margin: 0.5em 0 0.4em;
       font-size: 0.95em;
@@ -74,21 +74,38 @@
     .settings-row {
       display: grid;
       grid-template-columns: 18em 1fr auto;
-      gap: 0.5em 1em;
+      gap: 0.4em 1em;
       align-items: center;
-      padding: 0.35em 0;
+      padding: 0.5em 0;
       border-bottom: 1px dashed var(--border);
     }
     .settings-row:last-child { border-bottom: none; }
-    .settings-key { font-family: monospace; font-size: 0.9em; }
-    .settings-key .modified-dot {
+    .settings-row.row-array { align-items: start; }
+    .settings-row.row-array .settings-key { padding-top: 0.3em; }
+    .settings-key {
+      display: flex;
+      flex-direction: column;
+      gap: 0.15em;
+    }
+    .settings-label {
+      display: flex;
+      align-items: center;
+      gap: 0.35em;
+      font-weight: 500;
+    }
+    .settings-key-name {
+      font-family: monospace;
+      font-size: 0.78em;
+      color: var(--muted);
+    }
+    .modified-dot {
       display: inline-block;
       width: 0.5em;
       height: 0.5em;
       border-radius: 50%;
       background: #f59e0b;
-      margin-right: 0.35em;
       visibility: hidden;
+      flex-shrink: 0;
     }
     .settings-row.dirty .modified-dot,
     .settings-row.user-source .modified-dot { visibility: visible; }
@@ -121,6 +138,64 @@
       font-size: 0.8em;
       color: var(--muted);
       margin-left: 0.2em;
+    }
+    .settings-hint .tier-note {
+      color: #b45309;
+      margin-left: 0.4em;
+    }
+
+    /* Array-valued control (browse.top_level) */
+    .array-control {
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 0.3em 0.5em;
+      background: #fff;
+    }
+    .array-group-label {
+      font-size: 0.75em;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      margin: 0.3em 0 0.2em;
+    }
+    .array-list {
+      display: flex;
+      flex-direction: column;
+    }
+    .array-item {
+      display: grid;
+      grid-template-columns: auto 1fr auto auto;
+      align-items: center;
+      gap: 0.4em;
+      padding: 0.15em 0;
+      font-size: 0.9em;
+    }
+    .array-item.unknown .array-item-label {
+      color: var(--danger);
+      font-style: italic;
+    }
+    .array-item button.move {
+      padding: 0.05em 0.45em;
+      margin: 0;
+      font-size: 0.85em;
+      border-radius: 3px;
+      line-height: 1;
+    }
+    .array-item button.move:disabled {
+      opacity: 0.25;
+      border-color: var(--border);
+      color: var(--muted);
+    }
+    .array-divider {
+      border: none;
+      border-top: 1px dashed var(--border);
+      margin: 0.3em 0;
+    }
+    .array-empty {
+      font-size: 0.8em;
+      color: var(--muted);
+      font-style: italic;
+      padding: 0.2em 0;
     }
   </style>
 </head>
@@ -341,47 +416,44 @@
 
     // ── Settings (#14) ───────────────────────────────────────────────────
     // Each row keeps its initial value so we can compute the diff at Save
-    // time and POST only the keys that actually changed.
-    const settingsState = new Map(); // key -> { initial, current, type, default, source, restartRequired, row, input }
+    // time and POST only the keys that actually changed. The `current`
+    // value is always read from `state.current` — for scalar inputs the
+    // input event handler writes it, for the array control the
+    // reorder/toggle handlers write it directly.
+    const settingsState = new Map();
 
-    function inferType(value, defaultValue) {
-      // Booleans take precedence (typeof null === "object" so it's irrelevant here).
-      if (typeof value === "boolean" || typeof defaultValue === "boolean") return "bool";
-      // If either side is null, the key allows null → render as "nullable number".
-      if (value === null || defaultValue === null) return "nullable-number";
-      if (typeof value === "number") return "number";
-      return "text"; // fallback for future string settings
+    // Friendlier section titles. New keys can be added without
+    // touching the rest of the UI.
+    const SECTION_TITLES = {
+      browse: "Browse",
+    };
+    function sectionTitle(name) {
+      return SECTION_TITLES[name] ?? (name.charAt(0).toUpperCase() + name.slice(1));
     }
 
-    function restartHint(tier) {
+    function inferType(entry) {
+      // Closed option list → ordered set widget.
+      if (Array.isArray(entry.choices)) return "array";
+      const { value, default: defaultValue } = entry;
+      if (typeof value === "boolean" || typeof defaultValue === "boolean") return "bool";
+      if (value === null || defaultValue === null) return "nullable-number";
+      if (typeof value === "number") return "number";
+      return "text";
+    }
+
+    function tierNote(tier) {
       if (tier === "reload") return "Saving will trigger a rescan.";
       if (tier === "restart") return "Takes effect after server restart.";
       return null;
     }
 
     function valueEqual(a, b) {
-      // Treat undefined / null as equal to null for diffing purposes.
       if (a === undefined) a = null;
       if (b === undefined) b = null;
-      return a === b;
-    }
-
-    function readInput(state) {
-      const { input, type } = state;
-      if (type === "bool") return input.checked;
-      const raw = input.value.trim();
-      if (type === "nullable-number") return raw === "" ? null : Number(raw);
-      if (type === "number") return raw === "" ? null : Number(raw);
-      return raw;
-    }
-
-    function writeInput(state, value) {
-      const { input, type } = state;
-      if (type === "bool") {
-        input.checked = !!value;
-        return;
+      if (Array.isArray(a) && Array.isArray(b)) {
+        return a.length === b.length && a.every((v, i) => v === b[i]);
       }
-      input.value = value === null || value === undefined ? "" : String(value);
+      return a === b;
     }
 
     function refreshDirty() {
@@ -392,6 +464,174 @@
         anyDirty = anyDirty || isDirty;
       }
       document.getElementById("btn-save-settings").disabled = !anyDirty;
+    }
+
+    function buildScalarInput(state, entry) {
+      const input = document.createElement("input");
+      input.className = "settings-input";
+      if (state.type === "bool") {
+        input.type = "checkbox";
+        input.checked = !!entry.value;
+      } else if (state.type === "number" || state.type === "nullable-number") {
+        input.type = "number";
+        input.min = "1";
+        input.value = entry.value === null || entry.value === undefined ? "" : String(entry.value);
+        if (state.type === "nullable-number") {
+          input.placeholder = "(empty = no limit)";
+        }
+      } else {
+        input.type = "text";
+        input.value = entry.value === null ? "" : String(entry.value);
+      }
+      const read = () => {
+        if (state.type === "bool") return input.checked;
+        const raw = input.value.trim();
+        if (state.type === "nullable-number") return raw === "" ? null : Number(raw);
+        if (state.type === "number") return raw === "" ? null : Number(raw);
+        return raw;
+      };
+      const onChange = () => {
+        state.current = read();
+        refreshDirty();
+      };
+      input.addEventListener("input", onChange);
+      input.addEventListener("change", onChange);
+      return input;
+    }
+
+    // Two-group reorder-and-toggle widget for `browse.top_level` (and any
+    // future array-valued key with a `choices` catalog).
+    //
+    // - Enabled list = state.current, rendered in the saved order with
+    //   up/down buttons and an "uncheck to hide" checkbox.
+    // - Disabled list = catalog choices not in state.current, in catalog
+    //   order, with a "check to show" checkbox; checking appends to the end
+    //   of the enabled list.
+    // - IDs in state.current that aren't in the catalog ("unknown") render
+    //   with their raw ID and a warning style — unchecking is the cure.
+    function buildArrayControl(state, entry) {
+      const wrap = document.createElement("div");
+      wrap.className = "array-control";
+
+      const labelById = new Map(entry.choices.map((c) => [c.id, c.label]));
+
+      function render() {
+        wrap.innerHTML = "";
+
+        const enabled = state.current.slice();
+        const enabledSet = new Set(enabled);
+
+        const enabledLabel = document.createElement("div");
+        enabledLabel.className = "array-group-label";
+        enabledLabel.textContent = "Visible (top to bottom)";
+        wrap.appendChild(enabledLabel);
+
+        const enabledList = document.createElement("div");
+        enabledList.className = "array-list";
+        if (enabled.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "array-empty";
+          empty.textContent = "(none — root will be empty)";
+          enabledList.appendChild(empty);
+        }
+        enabled.forEach((id, idx) => {
+          const known = labelById.has(id);
+          const item = document.createElement("div");
+          item.className = "array-item" + (known ? "" : " unknown");
+
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.checked = true;
+          cb.addEventListener("change", () => {
+            state.current = state.current.filter((x) => x !== id);
+            render();
+            refreshDirty();
+          });
+          item.appendChild(cb);
+
+          const labelSpan = document.createElement("span");
+          labelSpan.className = "array-item-label";
+          labelSpan.textContent = known ? labelById.get(id) : `${id} (unknown)`;
+          item.appendChild(labelSpan);
+
+          const upBtn = document.createElement("button");
+          upBtn.type = "button";
+          upBtn.className = "move";
+          upBtn.textContent = "↑";
+          upBtn.title = "move up";
+          upBtn.disabled = idx === 0;
+          upBtn.addEventListener("click", () => {
+            const next = state.current.slice();
+            [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+            state.current = next;
+            render();
+            refreshDirty();
+          });
+          item.appendChild(upBtn);
+
+          const downBtn = document.createElement("button");
+          downBtn.type = "button";
+          downBtn.className = "move";
+          downBtn.textContent = "↓";
+          downBtn.title = "move down";
+          downBtn.disabled = idx === enabled.length - 1;
+          downBtn.addEventListener("click", () => {
+            const next = state.current.slice();
+            [next[idx + 1], next[idx]] = [next[idx], next[idx + 1]];
+            state.current = next;
+            render();
+            refreshDirty();
+          });
+          item.appendChild(downBtn);
+
+          enabledList.appendChild(item);
+        });
+        wrap.appendChild(enabledList);
+
+        const disabled = entry.choices.filter((c) => !enabledSet.has(c.id));
+        if (disabled.length > 0) {
+          const divider = document.createElement("hr");
+          divider.className = "array-divider";
+          wrap.appendChild(divider);
+
+          const disabledLabel = document.createElement("div");
+          disabledLabel.className = "array-group-label";
+          disabledLabel.textContent = "Hidden";
+          wrap.appendChild(disabledLabel);
+
+          const disabledList = document.createElement("div");
+          disabledList.className = "array-list";
+          disabled.forEach((choice) => {
+            const item = document.createElement("div");
+            item.className = "array-item";
+
+            const cb = document.createElement("input");
+            cb.type = "checkbox";
+            cb.checked = false;
+            cb.addEventListener("change", () => {
+              state.current = state.current.concat([choice.id]);
+              render();
+              refreshDirty();
+            });
+            item.appendChild(cb);
+
+            const labelSpan = document.createElement("span");
+            labelSpan.className = "array-item-label";
+            labelSpan.textContent = choice.label;
+            item.appendChild(labelSpan);
+
+            // Empty placeholders to keep grid alignment with the enabled rows.
+            item.appendChild(document.createElement("span"));
+            item.appendChild(document.createElement("span"));
+
+            disabledList.appendChild(item);
+          });
+          wrap.appendChild(disabledList);
+        }
+      }
+
+      render();
+      return wrap;
     }
 
     function renderSettings(entries) {
@@ -411,81 +651,71 @@
         const sec = document.createElement("div");
         sec.className = "settings-section";
         const h3 = document.createElement("h3");
-        h3.textContent = section;
+        h3.textContent = sectionTitle(section);
         sec.appendChild(h3);
 
         for (const e of items) {
+          const type = inferType(e);
+
           const row = document.createElement("div");
           row.className = "settings-row";
+          if (type === "array") row.classList.add("row-array");
           if (e.source === "user") row.classList.add("user-source");
 
           const keyDiv = document.createElement("div");
           keyDiv.className = "settings-key";
+          const labelLine = document.createElement("div");
+          labelLine.className = "settings-label";
           const dot = document.createElement("span");
           dot.className = "modified-dot";
           dot.title = "modified from default";
-          keyDiv.appendChild(dot);
-          keyDiv.appendChild(document.createTextNode(e.key));
+          labelLine.appendChild(dot);
+          labelLine.appendChild(document.createTextNode(e.label || e.key));
+          keyDiv.appendChild(labelLine);
+          const keyNameLine = document.createElement("div");
+          keyNameLine.className = "settings-key-name";
+          keyNameLine.textContent = e.key;
+          keyDiv.appendChild(keyNameLine);
           row.appendChild(keyDiv);
 
-          const type = inferType(e.value, e.default);
-          const input = document.createElement("input");
-          input.className = "settings-input";
-          if (type === "bool") {
-            input.type = "checkbox";
-            input.checked = !!e.value;
-          } else if (type === "number" || type === "nullable-number") {
-            input.type = "number";
-            input.min = "1";
-            input.value = e.value === null || e.value === undefined ? "" : String(e.value);
-            if (type === "nullable-number") {
-              input.placeholder = "(empty = no cap)";
-            }
-          } else {
-            input.type = "text";
-            input.value = e.value === null ? "" : String(e.value);
-          }
-          row.appendChild(input);
+          const state = {
+            key: e.key,
+            initial: e.value,
+            current: type === "array" && Array.isArray(e.value) ? e.value.slice() : e.value,
+            default: e.default,
+            source: e.source,
+            type,
+            row,
+          };
+          settingsState.set(e.key, state);
+
+          const control =
+            type === "array" ? buildArrayControl(state, e) : buildScalarInput(state, e);
+          row.appendChild(control);
 
           const resetBtn = document.createElement("button");
           resetBtn.className = "reset-link";
           resetBtn.textContent = "↺ default";
           resetBtn.title = "reset to default";
           resetBtn.disabled = e.source !== "user";
-          row.appendChild(resetBtn);
-
-          const hint = restartHint(e.restart_required);
-          if (hint) {
-            const hintDiv = document.createElement("div");
-            hintDiv.className = "settings-hint";
-            hintDiv.textContent = hint;
-            row.appendChild(hintDiv);
-          }
-
-          const state = {
-            key: e.key,
-            initial: e.value,
-            current: e.value,
-            default: e.default,
-            source: e.source,
-            type,
-            row,
-            input,
-          };
-          settingsState.set(e.key, state);
-
-          input.addEventListener("input", () => {
-            state.current = readInput(state);
-            refreshDirty();
-          });
-          input.addEventListener("change", () => {
-            state.current = readInput(state);
-            refreshDirty();
-          });
-
           resetBtn.addEventListener("click", async () => {
             await resetKey(e.key);
           });
+          row.appendChild(resetBtn);
+
+          const tier = tierNote(e.restart_required);
+          if (e.description || tier) {
+            const hintDiv = document.createElement("div");
+            hintDiv.className = "settings-hint";
+            if (e.description) hintDiv.appendChild(document.createTextNode(e.description));
+            if (tier) {
+              const note = document.createElement("span");
+              note.className = "tier-note";
+              note.textContent = tier;
+              hintDiv.appendChild(note);
+            }
+            row.appendChild(hintDiv);
+          }
 
           sec.appendChild(row);
         }

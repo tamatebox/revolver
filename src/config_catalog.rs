@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 
 use rusqlite::Connection;
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::config::Config;
@@ -46,46 +47,153 @@ impl ReloadTier {
     }
 }
 
+/// One option in an ordered-set / enum-valued config key. Sent verbatim to the
+/// admin UI so it can render real labels instead of `cat:*` internal IDs.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ChoiceMeta {
+    pub id: &'static str,
+    pub label: &'static str,
+}
+
+/// Canonical option list for `browse.top_level`. Order here is the UI's
+/// fallback presentation order for *disabled* (currently-hidden) entries —
+/// the saved value's array order drives the *enabled* order.
+///
+/// Labels match the user-facing facet titles emitted by
+/// `categories::build_root_facet`, pluralised where the facet is a *category
+/// of* something (e.g. "Album Artists" — a category containing many album
+/// artist containers).
+pub const TOP_LEVEL_CHOICES: &[ChoiceMeta] = &[
+    ChoiceMeta {
+        id: "cat:aa",
+        label: "Album Artists",
+    },
+    ChoiceMeta {
+        id: "cat:ar",
+        label: "Artists",
+    },
+    ChoiceMeta {
+        id: "cat:al",
+        label: "Albums",
+    },
+    ChoiceMeta {
+        id: "cat:gn",
+        label: "Genres",
+    },
+    ChoiceMeta {
+        id: "cat:recent",
+        label: "Recently Added",
+    },
+    ChoiceMeta {
+        id: "cat:played",
+        label: "Recently Played",
+    },
+    ChoiceMeta {
+        id: "cat:random",
+        label: "Random Albums",
+    },
+    ChoiceMeta {
+        id: "cat:hires",
+        label: "Hi-Res Albums",
+    },
+    ChoiceMeta {
+        id: "cat:lossy",
+        label: "Lossy Albums",
+    },
+    ChoiceMeta {
+        id: "cat:mixed",
+        label: "Mixed Quality",
+    },
+    ChoiceMeta {
+        id: "cat:cm",
+        label: "Composers",
+    },
+    ChoiceMeta {
+        id: "cat:cn",
+        label: "Conductors",
+    },
+    ChoiceMeta {
+        id: "cat:pf",
+        label: "Performers",
+    },
+    ChoiceMeta {
+        id: "cat:yr",
+        label: "Year",
+    },
+    ChoiceMeta {
+        id: "cat:dec",
+        label: "Decade",
+    },
+];
+
 pub struct ConfigKey {
     pub key: &'static str,
+    /// Short human-readable title for the admin UI row.
+    pub label: &'static str,
+    /// One-sentence explanation shown below the input.
+    pub description: &'static str,
     pub reload_tier: ReloadTier,
     /// Read the toml-default for this key out of [`Config`].
     pub default: fn(&Config) -> Value,
     /// Validate and normalize an incoming value. Returns the canonical form to
     /// persist, or a human-readable error.
     pub validate: fn(&Value) -> std::result::Result<Value, String>,
+    /// Closed option list for ordered-set keys; lets the UI render the
+    /// `browse.top_level` reorder-and-toggle control with real labels.
+    /// `None` for free-form scalars.
+    pub choices: Option<&'static [ChoiceMeta]>,
 }
 
 pub const CATALOG: &[ConfigKey] = &[
     ConfigKey {
-        key: "browse.recently_added_limit",
-        reload_tier: ReloadTier::Runtime,
-        default: default_recently_added_limit,
-        validate: validate_positive_int,
-    },
-    ConfigKey {
-        key: "browse.recently_added_max_age_days",
-        reload_tier: ReloadTier::Runtime,
-        default: default_recently_added_max_age_days,
-        validate: validate_nullable_positive_int,
-    },
-    ConfigKey {
-        key: "browse.random_albums_limit",
-        reload_tier: ReloadTier::Runtime,
-        default: default_random_albums_limit,
-        validate: validate_positive_int,
-    },
-    ConfigKey {
-        key: "browse.quality_categories",
-        reload_tier: ReloadTier::Runtime,
-        default: default_quality_categories,
-        validate: validate_bool,
-    },
-    ConfigKey {
         key: "browse.top_level",
+        label: "Top-level categories",
+        description: "Which categories appear at the root, and in what order. \
+                      Year / Decade / Composers / Conductors / Performers only \
+                      show up when the library has matching data.",
         reload_tier: ReloadTier::Runtime,
         default: default_top_level,
         validate: validate_string_array,
+        choices: Some(TOP_LEVEL_CHOICES),
+    },
+    ConfigKey {
+        key: "browse.recently_added_limit",
+        label: "Recently Added — max items",
+        description: "Maximum number of albums shown in the Recently Added view.",
+        reload_tier: ReloadTier::Runtime,
+        default: default_recently_added_limit,
+        validate: validate_positive_int,
+        choices: None,
+    },
+    ConfigKey {
+        key: "browse.recently_added_max_age_days",
+        label: "Recently Added — max age (days)",
+        description: "Hide albums first seen more than this many days ago. \
+                      Leave empty for no age limit.",
+        reload_tier: ReloadTier::Runtime,
+        default: default_recently_added_max_age_days,
+        validate: validate_nullable_positive_int,
+        choices: None,
+    },
+    ConfigKey {
+        key: "browse.random_albums_limit",
+        label: "Random Albums — list size",
+        description: "Number of albums included in the shuffled Random Albums list.",
+        reload_tier: ReloadTier::Runtime,
+        default: default_random_albums_limit,
+        validate: validate_positive_int,
+        choices: None,
+    },
+    ConfigKey {
+        key: "browse.quality_categories",
+        label: "Show quality categories",
+        description: "Show Hi-Res / Lossy / Mixed Quality categories at the root. \
+                      Acts as a master switch even when they are listed in \
+                      Top-level categories.",
+        reload_tier: ReloadTier::Runtime,
+        default: default_quality_categories,
+        validate: validate_bool,
+        choices: None,
     },
 ];
 

@@ -17,7 +17,7 @@ use axum::Json;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::config_catalog::{self, ReloadTier};
+use crate::config_catalog::{self, ChoiceMeta, ReloadTier};
 use crate::db::config_overrides;
 use crate::http::HttpError;
 use crate::state::AppState;
@@ -25,10 +25,14 @@ use crate::state::AppState;
 #[derive(Serialize)]
 pub struct ConfigEntry {
     pub key: &'static str,
+    pub label: &'static str,
+    pub description: &'static str,
     pub value: Value,
     pub default: Value,
     pub source: &'static str,           // "default" | "user"
     pub restart_required: &'static str, // "runtime" | "reload" | "restart"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub choices: Option<&'static [ChoiceMeta]>,
 }
 
 /// `GET /admin/config`.
@@ -52,10 +56,13 @@ pub async fn get_config(
         };
         out.push(ConfigEntry {
             key: entry.key,
+            label: entry.label,
+            description: entry.description,
             value,
             default,
             source,
             restart_required: entry.reload_tier.as_str(),
+            choices: entry.choices,
         });
     }
     Ok(Json(out))
@@ -258,7 +265,41 @@ quality_categories   = true
         for entry in arr {
             assert_eq!(entry["source"], "default");
             assert_eq!(entry["restart_required"], "runtime");
+            assert!(entry["label"].as_str().is_some_and(|s| !s.is_empty()));
+            assert!(entry["description"].as_str().is_some_and(|s| !s.is_empty()));
         }
+    }
+
+    #[tokio::test]
+    async fn ac1b_top_level_carries_choices_metadata() {
+        let (router, _dir) = app();
+        let resp = router
+            .oneshot(Request::get("/admin/config").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = body_json(resp).await;
+        let entry = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["key"] == "browse.top_level")
+            .unwrap();
+        let choices = entry["choices"].as_array().expect("choices for top_level");
+        assert!(!choices.is_empty());
+        let aa = choices
+            .iter()
+            .find(|c| c["id"] == "cat:aa")
+            .expect("cat:aa in choices");
+        assert_eq!(aa["label"], "Album Artists");
+
+        // Scalar keys should omit the field entirely (skip_serializing_if).
+        let scalar = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["key"] == "browse.recently_added_limit")
+            .unwrap();
+        assert!(scalar.get("choices").is_none());
     }
 
     #[tokio::test]
