@@ -531,6 +531,15 @@ Actions implemented:
 | `GetSystemUpdateID` | ◎ | Reads from `server_state`. |
 | `Search` | ○ | Minimal implementation (§5.4). |
 
+SOAP faults follow UPnP convention: every fault is returned as **HTTP 500 + `<s:Fault>` with `<UPnPError><errorCode>…</errorCode></UPnPError>`** in the body. Internal detail (DB messages, panic traces) is never leaked to the client; it goes to server logs at `tracing::error!` level only. The mapping:
+
+| Code | Name | When |
+|---|---|---|
+| `401` | InvalidAction | Unknown SOAP action name (i.e., not one of the rows above). |
+| `402` | InvalidArgs | Required argument missing (e.g., `ObjectID`, `SearchCriteria`) or `BrowseFlag` not one of `BrowseMetadata` / `BrowseDirectChildren`. |
+| `701` | NoSuchObject | `ObjectID` does not exist in the catalog. Internally typed as `crate::error::Error::NotFound { kind, key }`, logged at `warn` (a missing object is routine, not an alarm). |
+| `500` | InternalError | Any other failure inside Browse / Search (DB pool exhaustion, poisoned lock, IO error). Logged at `error`. |
+
 ### 5.4 Search Implementation
 
 The Search action is implemented to match the subset of the UPnP search

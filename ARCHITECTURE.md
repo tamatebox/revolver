@@ -13,7 +13,15 @@ src/
 ├── main.rs               Entry point: CLI args + config + tokio runtime + task spawn
 ├── lib.rs                Library entry (so integration tests can call `revolver::*`)
 ├── config.rs             `config.toml` schema and deserialization
-├── error.rs              Unified `thiserror`-based error type
+├── error.rs              Unified `thiserror`-based error type. Variants
+│                            cover IO / DB pool / SQLite / JSON / config
+│                            parse plus three "internal coordination"
+│                            categories: `NotFound { kind, key }` (catalog
+│                            miss → routed to UPnP `701 NoSuchObject`),
+│                            `LockPoisoned { what }`, `SemaphoreClosed { what }`.
+│                            Helper `sqlite_or_not_found` upgrades
+│                            `QueryReturnedNoRows` into `NotFound` at single-row
+│                            lookup sites.
 ├── state.rs              AppState (Arc<...>): db pool / scan_lock / UUID / friendly_name /
 │                            local_ip / subscriptions / notify_tasks / notify_client /
 │                            art_cache / random_state / scan_progress / started_at /
@@ -589,7 +597,40 @@ views default to flat — avoid sub-container cascades (see CLAUDE.md).
 
 ---
 
-## 3. Concurrency Model
+## 3. Observability
+
+`tracing` is used for both structured logging and request-scoped span correlation. Each request handler or background task enters a named span at the start, so every log line emitted inside (including from nested DB / browse / search calls) inherits the span's fields. Filtering logs by span name is the primary way to follow a single concern.
+
+### Span hierarchy
+
+| Span | Origin | Carried fields |
+|---|---|---|
+| `cd.browse` | `upnp/content_directory::handle_browse` (entered after args parse) | `object_id`, `flag`, `starting_index`, `count` |
+| `cd.search` | `upnp/content_directory::handle_search` | `criteria`, `starting_index`, `requested_count` |
+| `cd.get_system_update_id` | `upnp/content_directory::handle_system_update_id` | — |
+| `stream` | `http/stream::stream` (`#[instrument]`) | `track_id` |
+| `scan` | `scan::run` (`#[instrument]`) | `scan_id`, `root` |
+| `startup_scan` | wraps the `tokio::spawn` that detaches the startup scan in `main` | parent for the inner `scan` span |
+| `rescan` | wraps the `tokio::spawn` that detaches the `POST /admin/rescan` task | `scan_id`; parent for the inner `scan` span |
+| `gena.notify` | per-target NOTIFY future inside `upnp/gena::broadcast_propchange` | `sid`, `service` |
+| `gena.initial_notify` | post-`SUBSCRIBE` NOTIFY future inside `upnp/gena::spawn_initial_notify` | `sid` |
+
+`scan_id` is **caller-owned**: `main` generates it for the startup scan, `POST /admin/rescan` generates it before returning `{ scan_id, started_at }`, and both pass it to `scan::run`. So the value in the rescan response body, the value persisted to `last_scan_report`, and the value tagged on every scan log line are all the same string.
+
+### Log levels
+
+| Level | Intent | Examples |
+|---|---|---|
+| `error!` | Internal failure that needs investigation — typically maps to HTTP 5xx / SOAP `500 InternalError`. | DB pool exhausted, lock poisoned, scan failed, library-root escape attempt (security event). |
+| `warn!` | Degraded path that does not abort the request. | `Error::NotFound` (→ SOAP `701`), NOTIFY delivery failure, post-scan `optimize` / WAL checkpoint failure, play-stats update failure. |
+| `info!` | Per-request access log (one per Browse / Search / stream call) plus lifecycle milestones (config loaded, DB opened, scan started / complete, HTTP listening, shutdown signals). |
+| `debug!` | Flow detail useful when investigating but too noisy for default output. |
+
+Errors carrying typed `crate::error::Error` use `error = %e` (Display) — the `thiserror`-generated message is the source of truth. The two `HttpError::Internal(anyhow::Error)` log sites use `error = ?e` (Debug) so the anyhow cause chain surfaces.
+
+---
+
+## 4. Concurrency Model
 
 Top-level tasks spawned from `main.rs`:
 

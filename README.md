@@ -95,6 +95,18 @@ curl -X DELETE http://localhost:8200/admin/config/browse.recently_added_limit   
 
 Edits land in the SQLite-backed `config_overrides` table and persist across restarts.
 
+### Logs
+
+revolver writes structured logs to stderr via [`tracing`](https://docs.rs/tracing). Default level is `info`, which emits one line per Browse / Search / stream request plus scan and lifecycle milestones. Override with the `RUST_LOG` environment variable:
+
+```sh
+RUST_LOG=warn ./revolver                          # quieter (drop access logs, keep warnings + errors)
+RUST_LOG=info,revolver::http::stream=warn ./revolver   # silence per-stream access logs only
+RUST_LOG=revolver=debug ./revolver                # verbose
+```
+
+Each request and background task is wrapped in a named span (`cd.browse` / `cd.search` / `stream` / `scan` / `rescan` / `gena.notify` / ...), so nested logs carry the relevant `object_id` / `track_id` / `scan_id` / `sid` field automatically. See [`ARCHITECTURE.md`](ARCHITECTURE.md) §3 for the full span / level reference.
+
 ## Triggering rescans externally
 
 revolver intentionally has no in-process filesystem watcher or periodic-rescan loop — every modern host already ships a scheduler, and the rsync-completion case doesn't need watching at all. Wire whichever you prefer to `POST /admin/rescan` (returns 202 immediately; serialized through a semaphore so concurrent calls are safe — extras get 409 and can be ignored).
