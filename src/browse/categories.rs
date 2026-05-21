@@ -828,6 +828,7 @@ mod tests {
                 "cat:aa".into(),
                 "cat:played".into(),
             ],
+            true,
         );
         let r = root_children(&ctx_with(&conn, &rs, &s));
         let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
@@ -852,6 +853,7 @@ mod tests {
                 "cat:aa".into(), // duplicate
                 "cat:played".into(),
             ],
+            true,
         );
         let r = root_children(&ctx_with(&conn, &rs, &s));
         let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
@@ -870,6 +872,7 @@ mod tests {
             None,
             Some(100),
             vec!["cat:aa".into(), "cat:al".into()],
+            true,
         );
         let r = root_children(&ctx_with(&conn, &rs, &s));
         let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
@@ -893,6 +896,7 @@ mod tests {
                 "cat:cn".into(),
                 "cat:pf".into(),
             ],
+            true,
         );
         let r = root_children(&ctx_with(&conn, &rs, &s));
         let ids: Vec<&str> = r.didl.containers.iter().map(|c| c.id.as_str()).collect();
@@ -904,7 +908,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::schema::migrate(&conn).unwrap();
         let rs = RandomState::new();
-        let s = BrowseSettings::from_parts(Some(50), None, Some(100), vec![]);
+        let s = BrowseSettings::from_parts(Some(50), None, Some(100), vec![], true);
         let r = root_children(&ctx_with(&conn, &rs, &s));
         assert_eq!(r.total_matches, 0);
         assert!(r.didl.containers.is_empty());

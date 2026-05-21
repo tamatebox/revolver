@@ -28,6 +28,12 @@ pub struct BrowseSettings {
     /// Lossy / Mixed Quality are surfaced solely by this list — drop the
     /// `cat:hires` / `cat:lossy` / `cat:mixed` entries to hide them.
     pub top_level: Vec<String>,
+    /// #28: when true, Search runs an additional FTS5 trigram MATCH alongside
+    /// the existing `LIKE '%X%'` path so a 1–2 character typo still surfaces a
+    /// hit (ranked below exact / contains matches). Lives on `BrowseSettings`
+    /// — the catch-all runtime-settings snapshot reachable from every Search
+    /// path via `BrowseContext.settings`.
+    pub search_fuzzy_enabled: bool,
 }
 
 /// Runtime state shared by HTTP handlers and SSDP tasks (ARCHITECTURE.md §1).
@@ -106,12 +112,14 @@ impl BrowseSettings {
         recently_added_max_age_days: Option<u32>,
         random_albums_limit: Option<usize>,
         top_level: Vec<String>,
+        search_fuzzy_enabled: bool,
     ) -> Self {
         Self {
             recently_added_limit: recently_added_limit.map(|n| n.max(1)),
             recently_added_max_age_days,
             random_albums_limit: random_albums_limit.map(|n| n.max(1)),
             top_level,
+            search_fuzzy_enabled,
         }
     }
 }
@@ -123,6 +131,7 @@ impl Default for BrowseSettings {
             recently_added_max_age_days: None,
             random_albums_limit: None,
             top_level: crate::config::default_top_level(),
+            search_fuzzy_enabled: true,
         }
     }
 }

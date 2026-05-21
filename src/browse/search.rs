@@ -22,6 +22,13 @@
 //! `Performer`) is routed to the matching tracks column (#9). For
 //! Artist-class searches the result switches container type to match
 //! (`cm:` / `cn:` / `pf:`).
+//!
+//! #28: when a search predicate is a single-leaf `contains` and the query
+//! resolves to at least 3 chars after `for_search`, the WHERE clause also
+//! runs against the FTS5 trigram index (`albums_fts` / `tracks_fts`). The
+//! ranking CASE gains one extra bucket so trigram-only hits (typo-tolerant)
+//! are returned below the existing exact / contains tiers. Short queries
+//! and `search.fuzzy_enabled = false` fall back to the LIKE-only path.
 
 use rusqlite::types::Value as SqlValue;
 
@@ -64,6 +71,109 @@ fn empty() -> SearchResult {
             nodes: vec![],
         },
         total_matches: 0,
+    }
+}
+
+// ── #28: typo-tolerant FTS5 trigram helpers ───────────────────────────────
+
+/// Minimum normalized-query length at which trigram MATCH is enabled. Below
+/// this the SQLite trigram tokenizer has nothing to match on (a 3-char index
+/// cannot be probed by a 2-char fragment); short tokens like "U2" stay on
+/// the LIKE-only path. Char-counted post-normalization so multibyte still
+/// works.
+const FTS5_MIN_CHARS: usize = 3;
+
+/// Decide whether to layer FTS5 MATCH on top of LIKE for a given query value.
+/// Returns true only when the operator is on, the normalized form has enough
+/// characters, and the source string contained at least one non-space
+/// (otherwise the trigram payload is empty and MATCH would be a no-op or
+/// FTS5 syntax error).
+fn fuzzy_eligible(ctx: &BrowseContext, normalized: &str) -> bool {
+    ctx.settings.search_fuzzy_enabled
+        && normalized.chars().count() >= FTS5_MIN_CHARS
+        && normalized.trim().chars().next().is_some()
+}
+
+/// Build an FTS5 query that ORs every distinct trigram of `normalized`
+/// together. This is the typo-tolerance trick: a single phrase like
+/// `"beatlse"` would only match rows that physically contain that
+/// substring (FTS5's trigram tokenizer is just a fast `LIKE` index, not
+/// a fuzzy matcher), but ORing the query's own trigrams against the
+/// index lets a row whose trigrams *overlap* the query's surface as
+/// a hit. `beatles` and `beatlse` share `bea`, `eat`, `atl` → match.
+///
+/// Returns an empty string if `normalized` has fewer than 3 chars so the
+/// caller can skip the FTS5 branch entirely. Duplicate trigrams are
+/// collapsed (a query like "aaa" otherwise emits the same token twice).
+/// Each trigram is wrapped in double quotes per FTS5 phrase syntax with
+/// embedded quotes doubled (`https://sqlite.org/fts5.html#full_text_query_syntax`).
+fn fts5_trigram_or(normalized: &str) -> String {
+    let chars: Vec<char> = normalized.chars().collect();
+    if chars.len() < 3 {
+        return String::new();
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut parts: Vec<String> = Vec::with_capacity(chars.len().saturating_sub(2));
+    for window in chars.windows(3) {
+        let trigram: String = window.iter().collect();
+        if !seen.insert(trigram.clone()) {
+            continue;
+        }
+        let mut quoted = String::with_capacity(trigram.len() + 2);
+        quoted.push('"');
+        for c in trigram.chars() {
+            if c == '"' {
+                quoted.push('"');
+                quoted.push('"');
+            } else {
+                quoted.push(c);
+            }
+        }
+        quoted.push('"');
+        parts.push(quoted);
+    }
+    parts.join(" OR ")
+}
+
+/// FTS5 column-restricted trigram query: `{column_name}: ("t1" OR "t2" …)`.
+/// The colspec limits the OR-cloud to a single indexed column so e.g. an
+/// artist query never bleeds into the `album_norm` half of `albums_fts`.
+/// Column names are caller-controlled identifiers, never user input.
+fn fts5_col_trigram_query(column: &str, normalized: &str) -> String {
+    let inner = fts5_trigram_or(normalized);
+    if inner.is_empty() {
+        return String::new();
+    }
+    format!("{{{column}}}: ({inner})")
+}
+
+/// Predicate-shape check: is this exactly a single `dc:title contains "X"`
+/// or `upnp:artist contains "X"` with no role attribute? Used to gate the
+/// #28 fuzzy ranked paths so compound predicates (AND/OR trees) stay on
+/// the existing walk()-driven LIKE-only path.
+fn single_contains_title_or_artist(p: &Predicate) -> Option<&str> {
+    match p {
+        Predicate::Contains {
+            prop: Property::Title | Property::Artist,
+            value,
+            role,
+        } if role.is_none() => Some(value),
+        _ => None,
+    }
+}
+
+/// Like [`single_contains_title_or_artist`] but for the classical-facet
+/// route: the role attribute is required to be present (the caller has
+/// already used [`first_role`] to land here), so this only enforces the
+/// single-leaf Title-or-Artist shape and extracts the value.
+fn single_contains_value_for_classical(p: &Predicate) -> Option<&str> {
+    match p {
+        Predicate::Contains {
+            prop: Property::Title | Property::Artist,
+            value,
+            role: Some(_),
+        } => Some(value),
+        _ => None,
     }
 }
 
@@ -141,8 +251,7 @@ fn search_albums(
 
 /// Ranked Album-search for the single `dc:title contains "X"` case. The
 /// WHERE clause matches the same 3-way OR as `predicate_to_sql_albums`
-/// Title branch; ORDER BY layers a 4-bucket CASE on top so the most
-/// "obvious" hits come first:
+/// Title branch; ORDER BY layers a CASE so the most "obvious" hits come first:
 ///
 /// | Rank | Match                                                |
 /// |------|------------------------------------------------------|
@@ -150,12 +259,19 @@ fn search_albums(
 /// | 1    | effective_album_artist contains X (artist's own)     |
 /// | 2    | album name contains X                                |
 /// | 3    | only a track-level `tracks.artist` carries X (comp)  |
+/// | 4    | trigram-only typo hit (#28, fuzzy path)              |
 ///
 /// Rationale: an artist-name query (e.g. "Beatles") usually means "show me
 /// this person's records", so the artist-hit bucket beats a partial-album
 /// hit like "Beatles Anthology" that happens to carry the same substring.
-/// Same `?1` (the `%X%` LIKE value) is referenced from both the WHERE
-/// clause and the CASE; `?2` is the exact-match value (no `%`).
+/// Bucket 4 only appears when the fuzzy path is on AND the normalized query
+/// is at least [`FTS5_MIN_CHARS`] characters; an `albums_fts MATCH` row that
+/// also satisfies one of the LIKE branches still ranks in its higher bucket
+/// because the CASE is evaluated top-down.
+///
+/// Placeholders: `?1` = `%X%` LIKE value, `?2` = exact value, `?3` = FTS5
+/// phrase (only bound when fuzzy is eligible). LIMIT / OFFSET indices shift
+/// accordingly so the cached statements stay distinct per branch.
 fn search_albums_ranked(
     ctx: &BrowseContext,
     value: &str,
@@ -164,16 +280,51 @@ fn search_albums_ranked(
 ) -> Result<SearchResult> {
     let norm = crate::normalize::for_search(value);
     let like_pat = format!("%{}%", norm);
+    let fuzzy = fuzzy_eligible(ctx, &norm);
 
-    let where_sql = "album_norm LIKE ?1
-         OR effective_album_artist_norm LIKE ?1
-         OR EXISTS (SELECT 1 FROM tracks WHERE album_id = albums.id AND artist_norm LIKE ?1)";
+    // Two SQL shapes: one with the FTS5 OR branch + bucket-4 CASE arm, one
+    // without. Keeping them separate lets `prepare_cached` reuse each plan,
+    // and avoids paying the trigram MATCH cost on short / disabled queries.
+    let (where_sql, order_case_extra, lim_idx, off_idx) = if fuzzy {
+        (
+            "album_norm LIKE ?1
+             OR effective_album_artist_norm LIKE ?1
+             OR EXISTS (SELECT 1 FROM tracks WHERE album_id = albums.id AND artist_norm LIKE ?1)
+             OR albums.id IN (SELECT rowid FROM albums_fts WHERE albums_fts MATCH ?3)",
+            "ELSE 4",
+            4,
+            5,
+        )
+    } else {
+        (
+            "album_norm LIKE ?1
+             OR effective_album_artist_norm LIKE ?1
+             OR EXISTS (SELECT 1 FROM tracks WHERE album_id = albums.id AND artist_norm LIKE ?1)",
+            "ELSE 3",
+            3,
+            4,
+        )
+    };
 
-    let total: i64 = ctx.conn.query_row(
-        &format!("SELECT COUNT(*) FROM albums WHERE {where_sql}"),
-        rusqlite::params![&like_pat],
-        |r| r.get(0),
-    )?;
+    let phrase = if fuzzy {
+        fts5_trigram_or(&norm)
+    } else {
+        String::new()
+    };
+
+    let total: i64 = if fuzzy {
+        ctx.conn.query_row(
+            &format!("SELECT COUNT(*) FROM albums WHERE {where_sql}"),
+            rusqlite::params![&like_pat, &norm, &phrase],
+            |r| r.get(0),
+        )?
+    } else {
+        ctx.conn.query_row(
+            &format!("SELECT COUNT(*) FROM albums WHERE {where_sql}"),
+            rusqlite::params![&like_pat],
+            |r| r.get(0),
+        )?
+    };
 
     let sql = format!(
         "SELECT id, album, effective_album_artist, track_count
@@ -184,19 +335,28 @@ fn search_albums_ranked(
              WHEN album_norm = ?2 THEN 0
              WHEN effective_album_artist_norm LIKE ?1 THEN 1
              WHEN album_norm LIKE ?1 THEN 2
-             ELSE 3
+             WHEN EXISTS (SELECT 1 FROM tracks WHERE album_id = albums.id AND artist_norm LIKE ?1) THEN 3
+             {order_case_extra}
            END,
            album_norm
-         LIMIT ?3 OFFSET ?4"
+         LIMIT ?{lim_idx} OFFSET ?{off_idx}"
     );
     let mut stmt = ctx.conn.prepare_cached(&sql)?;
-    let rows: Vec<(i64, String, String, i64)> = stmt
-        .query_map(
+    let rows: Vec<(i64, String, String, i64)> = if fuzzy {
+        stmt.query_map(
+            rusqlite::params![&like_pat, &norm, &phrase, count as i64, start as i64],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?
+        .filter_map(|r| r.ok())
+        .collect()
+    } else {
+        stmt.query_map(
             rusqlite::params![&like_pat, &norm, count as i64, start as i64],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?
         .filter_map(|r| r.ok())
-        .collect();
+        .collect()
+    };
 
     let containers: Vec<Container> = rows
         .into_iter()
@@ -251,6 +411,14 @@ fn search_artists(
                 ctx, predicate, column, prefix, id_builder, start, count,
             );
         }
+    }
+    // #28: single-leaf `dc:title contains "X"` / `upnp:artist contains "X"` is
+    // the Linn Artist-field shape. Route to the dedicated value-only path so
+    // we can fold the FTS5 MATCH branch in alongside LIKE. Compound predicates
+    // stay on the walk() / UNION path (fuzzy in compound is out of scope per
+    // #28 — typo tolerance is only needed for the typing-into-one-field case).
+    if let Some(value) = single_contains_title_or_artist(predicate) {
+        return search_artists_value(ctx, value, start, count);
     }
     // For Artist-class searches Linn sends `dc:title contains "X"` — meaning
     // the artist name. #22: search the UNION of album_artist (curated, from
@@ -358,6 +526,125 @@ fn search_artists(
     })
 }
 
+/// #28: Linn Artist-field search shape — one normalized value flows into both
+/// the album_artist and the track-level artist columns. WHERE matches
+/// `effective_album_artist_norm` (curated, surfaces as `aa:`) and
+/// `tracks.artist_norm` (noisy, surfaces as `ar:`) via the existing #22
+/// UNION pattern, plus the FTS5 trigram OR branches when fuzzy is eligible.
+/// Container kind is decided by `MAX(is_aa)` so a name present in both
+/// columns dedupes to `aa:`.
+///
+/// The fuzzy branch is column-restricted (`{effective_album_artist_norm}: "X"`)
+/// so a name appearing as an album title via `albums_fts.album_norm` does NOT
+/// promote a non-artist album to an artist hit — different FTS5 column, no
+/// cross-talk.
+fn search_artists_value(
+    ctx: &BrowseContext,
+    value: &str,
+    start: usize,
+    count: usize,
+) -> Result<SearchResult> {
+    let norm = crate::normalize::for_search(value);
+    let like_pat = format!("%{}%", norm);
+    let fuzzy = fuzzy_eligible(ctx, &norm);
+
+    let (aa_where, tr_where, params): (String, String, Vec<SqlValue>) = if fuzzy {
+        let aa_phrase = fts5_col_trigram_query("effective_album_artist_norm", &norm);
+        let tr_phrase = fts5_col_trigram_query("artist_norm", &norm);
+        (
+            "effective_album_artist_norm LIKE ?1
+             OR id IN (SELECT rowid FROM albums_fts WHERE albums_fts MATCH ?2)"
+                .to_string(),
+            "artist_norm LIKE ?1
+             OR id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?3)"
+                .to_string(),
+            vec![
+                SqlValue::from(like_pat.clone()),
+                SqlValue::from(aa_phrase),
+                SqlValue::from(tr_phrase),
+            ],
+        )
+    } else {
+        (
+            "effective_album_artist_norm LIKE ?1".to_string(),
+            "artist_norm LIKE ?1".to_string(),
+            vec![SqlValue::from(like_pat.clone())],
+        )
+    };
+
+    let total_sql = format!(
+        "SELECT COUNT(*) FROM (
+           SELECT effective_album_artist AS name FROM albums WHERE {aa_where}
+           UNION
+           SELECT artist AS name FROM tracks
+             WHERE artist IS NOT NULL AND artist != '' AND {tr_where}
+         )"
+    );
+    let total: i64 = ctx
+        .conn
+        .query_row(&total_sql, rusqlite::params_from_iter(&params), |r| {
+            r.get(0)
+        })?;
+
+    let lim_idx = params.len() + 1;
+    let off_idx = params.len() + 2;
+    let sql = format!(
+        "SELECT name, MAX(is_aa) AS is_aa
+         FROM (
+           SELECT effective_album_artist AS name,
+                  effective_album_artist_norm AS name_norm,
+                  1 AS is_aa
+             FROM albums WHERE {aa_where}
+           UNION ALL
+           SELECT artist AS name, artist_norm AS name_norm, 0 AS is_aa
+             FROM tracks
+             WHERE artist IS NOT NULL AND artist != '' AND {tr_where}
+         )
+         GROUP BY name
+         ORDER BY MIN(name_norm)
+         LIMIT ?{lim_idx} OFFSET ?{off_idx}"
+    );
+    let mut list_params = params.clone();
+    list_params.push(SqlValue::from(count as i64));
+    list_params.push(SqlValue::from(start as i64));
+
+    let mut stmt = ctx.conn.prepare_cached(&sql)?;
+    let rows: Vec<(String, i64)> = stmt
+        .query_map(rusqlite::params_from_iter(&list_params), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let containers: Vec<Container> = rows
+        .into_iter()
+        .map(|(name, is_aa)| {
+            let (id, parent) = if is_aa == 1 {
+                (ObjectId::AlbumArtist(name.clone()), "cat:aa")
+            } else {
+                (ObjectId::Artist(name.clone()), "cat:ar")
+            };
+            Container {
+                id: object_id::encode(&id),
+                parent_id: parent.to_string(),
+                title: name,
+                upnp_class: "object.container.person.musicArtist",
+                child_count: None,
+                artist: None,
+                album_art_uri: None,
+            }
+        })
+        .collect();
+    Ok(SearchResult {
+        didl: DidlOutput {
+            containers,
+            items: vec![],
+            nodes: vec![],
+        },
+        total_matches: total as usize,
+    })
+}
+
 // ── Track search ──────────────────────────────────────────────────────────
 
 fn search_track_items(
@@ -366,6 +653,15 @@ fn search_track_items(
     start: usize,
     count: usize,
 ) -> Result<SearchResult> {
+    // #28: single-leaf `dc:title` / `upnp:artist` / `upnp:genre` contains is
+    // a Linn track-field shape we can route through the FTS5 trigram column
+    // matching the same `tracks_fts` row. `upnp:album` single-contains is
+    // intentionally left on the walk()/LIKE path (album_norm lives on a
+    // different FTS5 table — the cross-table fuzzy join isn't worth the
+    // wiring for a shape Linn doesn't actually send).
+    if let Some((column, value)) = single_track_fuzzy_target(predicate) {
+        return search_track_value(ctx, column, value, start, count);
+    }
     // #9: if `upnp:artist[@role="Composer"]` (etc.) appears, route that leaf
     // to the matching tracks column rather than `t.artist`.
     let where_clause = walk(predicate, &|prop, role| match prop {
@@ -413,6 +709,139 @@ fn search_track_items(
         off = where_clause.params.len() + 2,
     );
     let mut stmt = ctx.conn.prepare_cached(&sql)?;
+    let rows: Vec<(i64, TrackRow)> = stmt
+        .query_map(rusqlite::params_from_iter(&list_params), |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                TrackRow {
+                    album_id: r.get(1)?,
+                    title: r.get(2)?,
+                    artist: r.get(3)?,
+                    genre: r.get(4)?,
+                    track_num: r.get(5)?,
+                    disc_num: r.get(6)?,
+                    duration_ms: r.get(7)?,
+                    sample_rate: r.get(8)?,
+                    bit_depth: r.get(9)?,
+                    channels: r.get(10)?,
+                    bitrate: r.get(11)?,
+                    mime_type: r.get(12)?,
+                    file_size: r.get(13)?,
+                    album: r.get(14)?,
+                    multi_disc: r.get::<_, i64>(15)? != 0,
+                    composer: r.get(16)?,
+                    conductor: r.get(17)?,
+                    performer: r.get(18)?,
+                },
+            ))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let items: Vec<Item> = rows
+        .into_iter()
+        .map(|(id, row)| build_track_item(ctx, id, &row))
+        .collect();
+    Ok(SearchResult {
+        didl: DidlOutput {
+            containers: vec![],
+            items,
+            nodes: vec![],
+        },
+        total_matches: total as usize,
+    })
+}
+
+/// #28: single-leaf Track-class predicate inspection — returns the
+/// `tracks_fts` column we should MATCH against and the query value, or
+/// `None` for shapes we leave on the LIKE path. Role attributes route to
+/// composer / conductor / performer just like the existing walk-based
+/// path so behavior parity holds when fuzzy is off (#9).
+fn single_track_fuzzy_target(p: &Predicate) -> Option<(&'static str, &str)> {
+    let Predicate::Contains { prop, value, role } = p else {
+        return None;
+    };
+    let col = match (prop, role.as_deref()) {
+        (Property::Title, _) => "title_norm",
+        (Property::Artist, Some("Composer")) => "composer_norm",
+        (Property::Artist, Some("Conductor")) => "conductor_norm",
+        (Property::Artist, Some("Performer")) => "performer_norm",
+        (Property::Artist, _) => "artist_norm",
+        (Property::Genre, _) => "genre_norm",
+        _ => return None,
+    };
+    Some((col, value.as_str()))
+}
+
+/// #28: ranked Track-class search for the single-leaf case. WHERE pairs a
+/// `t.{column} LIKE` branch with an optional `tracks_fts MATCH` branch
+/// keyed to the same column; ORDER BY surfaces LIKE hits ahead of
+/// trigram-only typo hits via a 2-bucket CASE. Result shape is identical
+/// to the existing walk()-driven `search_track_items` so DIDL emission
+/// downstream is unchanged.
+fn search_track_value(
+    ctx: &BrowseContext,
+    column: &'static str,
+    value: &str,
+    start: usize,
+    count: usize,
+) -> Result<SearchResult> {
+    let norm = crate::normalize::for_search(value);
+    let like_pat = format!("%{}%", norm);
+    let fuzzy = fuzzy_eligible(ctx, &norm);
+
+    let (where_sql, params): (String, Vec<SqlValue>) = if fuzzy {
+        let phrase = fts5_col_trigram_query(column, &norm);
+        (
+            format!(
+                "t.{column} LIKE ?1
+                 OR t.id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?2)"
+            ),
+            vec![SqlValue::from(like_pat.clone()), SqlValue::from(phrase)],
+        )
+    } else {
+        (
+            format!("t.{column} LIKE ?1"),
+            vec![SqlValue::from(like_pat.clone())],
+        )
+    };
+
+    let total: i64 = {
+        let sql = format!(
+            "SELECT COUNT(*) FROM tracks t JOIN albums a ON t.album_id = a.id WHERE {where_sql}"
+        );
+        ctx.conn
+            .query_row(&sql, rusqlite::params_from_iter(&params), |r| r.get(0))?
+    };
+
+    let lim_idx = params.len() + 1;
+    let off_idx = params.len() + 2;
+    // bucket 0 = LIKE hit, bucket 1 = trigram-only typo hit (only present
+    // when fuzzy is on; otherwise the CASE collapses to a single arm).
+    let order_case = if fuzzy {
+        format!(
+            "CASE WHEN t.{column} LIKE ?1 THEN 0 ELSE 1 END,
+                 t.title_norm"
+        )
+    } else {
+        "t.title_norm".to_string()
+    };
+
+    let sql = format!(
+        "SELECT t.id, t.album_id, t.title, t.artist, t.genre, t.track_num, t.disc_num,
+                t.duration_ms, t.sample_rate, t.bit_depth, t.channels,
+                t.bitrate, t.mime_type, t.file_size, a.album,
+                (SELECT IFNULL(MAX(disc_num), 0) FROM tracks WHERE album_id = t.album_id) > 1,
+                t.composer, t.conductor, t.performer
+         FROM tracks t JOIN albums a ON t.album_id = a.id
+         WHERE {where_sql}
+         ORDER BY {order_case}
+         LIMIT ?{lim_idx} OFFSET ?{off_idx}"
+    );
+    let mut stmt = ctx.conn.prepare_cached(&sql)?;
+    let mut list_params = params;
+    list_params.push(SqlValue::from(count as i64));
+    list_params.push(SqlValue::from(start as i64));
     let rows: Vec<(i64, TrackRow)> = stmt
         .query_map(rusqlite::params_from_iter(&list_params), |r| {
             Ok((
@@ -514,19 +943,39 @@ fn search_classical_facet(
         return Ok(empty());
     }
 
+    // #28: single-leaf Contains? Add a column-restricted FTS5 MATCH OR-branch
+    // against the same `{column}_norm` so typos still surface a hit. Compound
+    // predicates (AND/OR trees) stay on the walk()/LIKE path — out of scope
+    // per #28.
+    let (effective_where, effective_params) = {
+        let mut sql = where_clause.sql.clone();
+        let mut params = where_clause.params.clone();
+        if let Some(value) = single_contains_value_for_classical(predicate) {
+            let norm = crate::normalize::for_search(value);
+            if fuzzy_eligible(ctx, &norm) {
+                let next_idx = params.len() + 1;
+                sql = format!(
+                    "({sql} OR id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?{next_idx}))"
+                );
+                params.push(SqlValue::from(fts5_col_trigram_query(norm_col, &norm)));
+            }
+        }
+        (sql, params)
+    };
+
     let count_sql = format!(
         "SELECT COUNT(*) FROM (SELECT DISTINCT {col} FROM tracks
          WHERE {col} IS NOT NULL AND {col} != '' AND {where_})",
         col = column,
-        where_ = where_clause.sql,
+        where_ = effective_where,
     );
     let total: i64 = ctx.conn.query_row(
         &count_sql,
-        rusqlite::params_from_iter(&where_clause.params),
+        rusqlite::params_from_iter(&effective_params),
         |r| r.get(0),
     )?;
 
-    let mut list_params = where_clause.params.clone();
+    let mut list_params = effective_params.clone();
     list_params.push(SqlValue::from(count as i64));
     list_params.push(SqlValue::from(start as i64));
     let sql = format!(
@@ -536,9 +985,9 @@ fn search_classical_facet(
          LIMIT ?{lim} OFFSET ?{off}",
         col = column,
         norm_col = norm_col,
-        where_ = where_clause.sql,
-        lim = where_clause.params.len() + 1,
-        off = where_clause.params.len() + 2,
+        where_ = effective_where,
+        lim = effective_params.len() + 1,
+        off = effective_params.len() + 2,
     );
     let mut stmt = ctx.conn.prepare_cached(&sql)?;
     let names: Vec<String> = stmt
@@ -1333,6 +1782,402 @@ mod tests {
         );
         let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
         assert_eq!(r.total_matches, 1);
+    }
+
+    // ── #28: typo-tolerant FTS5 trigram matching ──────────────────────────
+
+    /// Build a `BrowseContext` borrowing a caller-provided `BrowseSettings`
+    /// so each #28 test can flip `search_fuzzy_enabled` without mutating
+    /// shared OnceLock state.
+    fn ctx_with_settings<'a>(
+        conn: &'a Connection,
+        settings: &'a crate::state::BrowseSettings,
+    ) -> BrowseContext<'a> {
+        static RS: std::sync::OnceLock<crate::random::RandomState> = std::sync::OnceLock::new();
+        BrowseContext {
+            conn,
+            art_base_url: "http://x/art",
+            stream_base_url: "http://x/stream",
+            random_state: RS.get_or_init(crate::random::RandomState::new),
+            now_secs: 0,
+            settings,
+        }
+    }
+
+    #[test]
+    fn tz1_album_typo_via_trigram_hits_below_exact() {
+        // "Beatles" misspelled as "Beatlse" (adjacent letter swap, distance 1).
+        // The default `seed_db()` has Abbey Road by The Beatles — without #28
+        // this query would return 0 rows. With trigram MATCH the album surfaces.
+        let conn = seed_db();
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.album" and dc:title contains "Beatlse""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.containers[0].title, "Abbey Road");
+    }
+
+    #[test]
+    fn tz2_exact_still_ranks_first_when_trigram_also_hits() {
+        // Two albums: an exact title "Solid" and a misspelled match for "Soild".
+        // Querying "Solid" must surface the exact album in bucket 0, with the
+        // typo-candidate album (if any) appearing strictly below it.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::schema::migrate(&conn).unwrap();
+        let exact_id = crate::db::albums::upsert(
+            &conn,
+            &crate::db::albums::AlbumKey {
+                effective_album_artist: "Some Artist",
+                album: "Solid",
+                compilation: false,
+            },
+            Some("Some Artist"),
+            0,
+        )
+        .unwrap();
+        let typo_id = crate::db::albums::upsert(
+            &conn,
+            &crate::db::albums::AlbumKey {
+                effective_album_artist: "Other Artist",
+                album: "Soild Rock",
+                compilation: false,
+            },
+            Some("Other Artist"),
+            0,
+        )
+        .unwrap();
+        for (album_id, path) in [(exact_id, "/m/e.flac"), (typo_id, "/m/t.flac")] {
+            crate::db::tracks::upsert(
+                &conn,
+                &crate::db::tracks::TrackRow {
+                    album_id,
+                    path,
+                    title: Some("t"),
+                    artist: Some("x"),
+                    genre: None,
+                    track_num: Some(1),
+                    disc_num: Some(1),
+                    duration_ms: Some(1),
+                    sample_rate: Some(44100),
+                    bit_depth: Some(16),
+                    channels: Some(2),
+                    bitrate: Some(1),
+                    codec: "flac",
+                    mime_type: "audio/flac",
+                    file_size: 1,
+                    added_at: 0,
+                    mtime: 0,
+                    composer: None,
+                    conductor: None,
+                    performer: None,
+                    year: None,
+                    rg_track_gain: None,
+                    rg_track_peak: None,
+                    rg_album_gain: None,
+                    rg_album_peak: None,
+                    artist_sort: None,
+                    album_artist_sort: None,
+                    album_sort: None,
+                    title_sort: None,
+                    composer_sort: None,
+                    original_year: None,
+                    mb_recording_id: None,
+                    mb_release_id: None,
+                    mb_release_group_id: None,
+                    mb_artist_id: None,
+                    mb_release_artist_id: None,
+                },
+            )
+            .unwrap();
+        }
+        crate::db::albums::recalc_counts(&conn).unwrap();
+
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.album" and dc:title contains "Solid""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        // Both rows hit (exact "Solid" via bucket 0, "Soild Rock" via bucket 2
+        // since the album_norm LIKE branch finds "solid" inside "soild rock"?
+        // Actually — "soild rock" doesn't contain "solid" as a substring, so
+        // it only reaches the row via trigram (bucket 4). The first slot must
+        // still be the exact album.
+        assert!(r.total_matches >= 1);
+        assert_eq!(r.didl.containers[0].title, "Solid");
+    }
+
+    #[test]
+    fn tz3_short_query_uses_like_only_path() {
+        // Query length < 3 chars must NOT hit the FTS5 path (trigram needs ≥ 3
+        // chars). "U2" is the canonical canary: as long as LIKE on a row whose
+        // album_artist contains "u2" still works, the short-query fallback is
+        // intact. We don't have a U2 album in the seed, so use a 2-char query
+        // that does match: "Be" against "The Beatles".
+        let conn = seed_db();
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.album" and dc:title contains "Be""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        // "be" appears in "the beatles" (album_artist) → bucket 1. Exact result
+        // shape doesn't matter; the assertion that matters is "no panic, no
+        // FTS5 syntax error on a 2-char query".
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.containers[0].title, "Abbey Road");
+    }
+
+    #[test]
+    fn tz4_fuzzy_disabled_drops_typo_hit() {
+        // With `search.fuzzy_enabled = false`, "Beatlse" must return zero —
+        // the LIKE path alone cannot fold the typo and bucket 4 isn't wired.
+        let conn = seed_db();
+        let settings = crate::state::BrowseSettings {
+            search_fuzzy_enabled: false,
+            ..crate::state::BrowseSettings::default()
+        };
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.album" and dc:title contains "Beatlse""#,
+        );
+        let r = search_tracks(&ctx_with_settings(&conn, &settings), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 0);
+
+        // Sanity: with fuzzy on (the default `ctx`), the same query returns 1.
+        let r2 = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r2.total_matches, 1);
+    }
+
+    #[test]
+    fn tz5_artist_class_typo_via_trigram() {
+        // Linn Artist field with a typo. "Beatlse" → The Beatles via trigram.
+        let conn = seed_db();
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.person.musicArtist" and dc:title contains "Beatlse""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.containers[0].title, "The Beatles");
+        // Container kind must still match the curated/track-only distinction —
+        // "The Beatles" is an album_artist, so `aa:`.
+        assert!(r.didl.containers[0].id.starts_with("aa:"));
+    }
+
+    #[test]
+    fn tz6_track_class_single_title_typo_via_trigram() {
+        // Track-class single-leaf `dc:title contains` typo. Uses a bespoke
+        // 2-track seed so the assertion is unambiguous: a typo on "Yesterday"
+        // must surface that one track without dragging the other in through
+        // an incidental trigram overlap. The trigram OR fuzzy path is
+        // intentionally noise-tolerant — short / overlapping pairs in
+        // `seed_db()` like "Come Together" / "Something" share the `eth`
+        // trigram, so we keep the noise study to its own setup.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::schema::migrate(&conn).unwrap();
+        let aid = crate::db::albums::upsert(
+            &conn,
+            &crate::db::albums::AlbumKey {
+                effective_album_artist: "The Beatles",
+                album: "Help!",
+                compilation: false,
+            },
+            Some("The Beatles"),
+            0,
+        )
+        .unwrap();
+        for (path, title) in [("/m/y.flac", "Yesterday"), ("/m/n.flac", "Nowhere Man")] {
+            crate::db::tracks::upsert(
+                &conn,
+                &crate::db::tracks::TrackRow {
+                    album_id: aid,
+                    path,
+                    title: Some(title),
+                    artist: Some("The Beatles"),
+                    genre: None,
+                    track_num: Some(1),
+                    disc_num: Some(1),
+                    duration_ms: Some(1),
+                    sample_rate: Some(44100),
+                    bit_depth: Some(16),
+                    channels: Some(2),
+                    bitrate: Some(1),
+                    codec: "flac",
+                    mime_type: "audio/flac",
+                    file_size: 1,
+                    added_at: 0,
+                    mtime: 0,
+                    composer: None,
+                    conductor: None,
+                    performer: None,
+                    year: None,
+                    rg_track_gain: None,
+                    rg_track_peak: None,
+                    rg_album_gain: None,
+                    rg_album_peak: None,
+                    artist_sort: None,
+                    album_artist_sort: None,
+                    album_sort: None,
+                    title_sort: None,
+                    composer_sort: None,
+                    original_year: None,
+                    mb_recording_id: None,
+                    mb_release_id: None,
+                    mb_release_group_id: None,
+                    mb_artist_id: None,
+                    mb_release_artist_id: None,
+                },
+            )
+            .unwrap();
+        }
+        crate::db::albums::recalc_counts(&conn).unwrap();
+
+        // "Yseterday" — adjacent-letter swap. 9 chars → 7 trigrams, multiple
+        // shared with "yesterday" (`yes` is broken but `ter`, `erd`, `rda`,
+        // `day` survive). "Nowhere Man" shares none.
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.item.audioItem" and dc:title contains "Yseterday""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.items[0].title, "Yesterday");
+    }
+
+    #[test]
+    fn tz7_composer_role_typo_via_trigram() {
+        // Classical-facet route: role="Composer" + typo. Trigram OR needs a
+        // composer name long enough that a 1-char swap still preserves several
+        // shared 3-grams (a 4-char name like "Bach" has only 2 trigrams, and
+        // a single swap can wipe both). Use the full "Johann Sebastian Bach"
+        // form so the test reflects realistic CD-tag length.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::schema::migrate(&conn).unwrap();
+        let aid = crate::db::albums::upsert(
+            &conn,
+            &crate::db::albums::AlbumKey {
+                effective_album_artist: "Various Artists",
+                album: "Classical Mix",
+                compilation: true,
+            },
+            None,
+            0,
+        )
+        .unwrap();
+        crate::db::tracks::upsert(
+            &conn,
+            &crate::db::tracks::TrackRow {
+                album_id: aid,
+                path: "/m/bwv.flac",
+                title: Some("Air on the G String"),
+                artist: Some("Berlin Philharmonic"),
+                genre: None,
+                track_num: Some(1),
+                disc_num: Some(1),
+                duration_ms: Some(1),
+                sample_rate: Some(44100),
+                bit_depth: Some(16),
+                channels: Some(2),
+                bitrate: Some(1),
+                codec: "flac",
+                mime_type: "audio/flac",
+                file_size: 1,
+                added_at: 0,
+                mtime: 0,
+                composer: Some("Johann Sebastian Bach"),
+                conductor: Some("Karajan"),
+                performer: Some("Berlin Philharmonic"),
+                year: None,
+                rg_track_gain: None,
+                rg_track_peak: None,
+                rg_album_gain: None,
+                rg_album_peak: None,
+                artist_sort: None,
+                album_artist_sort: None,
+                album_sort: None,
+                title_sort: None,
+                composer_sort: None,
+                original_year: None,
+                mb_recording_id: None,
+                mb_release_id: None,
+                mb_release_group_id: None,
+                mb_artist_id: None,
+                mb_release_artist_id: None,
+            },
+        )
+        .unwrap();
+        crate::db::albums::recalc_counts(&conn).unwrap();
+
+        // "Sebsatian" — adjacent-letter swap inside the middle name. Plenty
+        // of overlapping trigrams (`seb`, `eba`/`ebs`, …, `tia`, `ian`).
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.person.musicArtist" and upnp:artist[@role="Composer"] contains "Johann Sebsatian""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.containers[0].title, "Johann Sebastian Bach");
+        assert!(r.didl.containers[0].id.starts_with("cm:"));
+    }
+
+    #[test]
+    fn tz8_track_class_or_composition_unchanged_by_fuzzy() {
+        // The OR-composed Track-class shape (Linn's Track / global field)
+        // intentionally stays on the LIKE-only path. Confirm a typo on that
+        // shape does NOT surface a hit — the single-leaf fast path is the
+        // only one that fuzzy-matches in #28. Regression guard.
+        let conn = seed_db();
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.item.audioItem" and ( dc:title contains "Cmoe Together" or upnp:album contains "Cmoe Together" or upnp:artist contains "Cmoe Together" or upnp:genre contains "Cmoe Together" )"#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(r.total_matches, 0);
+    }
+
+    #[test]
+    fn tz9_trigger_sync_insert_update_delete() {
+        // The AFTER triggers on `albums` keep `albums_fts` in sync without a
+        // separate upsert path. Verify all three (insert / update / delete)
+        // by driving the source table and querying FTS5 directly.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::schema::migrate(&conn).unwrap();
+
+        let id = crate::db::albums::upsert(
+            &conn,
+            &crate::db::albums::AlbumKey {
+                effective_album_artist: "Trigger Test",
+                album: "Phantom",
+                compilation: false,
+            },
+            Some("Trigger Test"),
+            0,
+        )
+        .unwrap();
+
+        let hits = |needle: &str| -> i64 {
+            let phrase = format!(r#""{}""#, needle);
+            conn.query_row(
+                "SELECT COUNT(*) FROM albums_fts WHERE albums_fts MATCH ?1",
+                rusqlite::params![&phrase],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+        };
+
+        // INSERT trigger: "phantom" indexed.
+        assert!(hits("phantom") >= 1);
+
+        // UPDATE trigger: rename the album, old index entry gone, new one live.
+        conn.execute(
+            "UPDATE albums SET album = ?1, album_norm = ?2 WHERE id = ?3",
+            rusqlite::params!["Specter", "specter", id],
+        )
+        .unwrap();
+        assert_eq!(hits("phantom"), 0);
+        assert!(hits("specter") >= 1);
+
+        // DELETE trigger: row removed, index empty.
+        conn.execute("DELETE FROM albums WHERE id = ?1", rusqlite::params![id])
+            .unwrap();
+        assert_eq!(hits("specter"), 0);
     }
 
     // ── Pagination still works ────────────────────────────────────────────

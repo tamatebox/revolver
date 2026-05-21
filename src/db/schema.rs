@@ -10,7 +10,7 @@ use crate::error::Result;
 /// would silently corrupt data).
 ///
 /// Bump by +1 whenever a column is added or removed.
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 /// Table definitions from SPEC §3.1. Idempotent via `CREATE ... IF NOT EXISTS`.
 const SCHEMA_SQL: &str = r#"
@@ -112,6 +112,65 @@ CREATE TABLE IF NOT EXISTS config_overrides (
 );
 "#;
 
+/// #28: FTS5 trigram-tokenizer virtual tables shadowing the `*_norm` columns
+/// on `albums` and `tracks`, plus the AFTER INSERT/UPDATE/DELETE triggers that
+/// keep them in sync. External-content tables (`content='albums'` etc.) share
+/// the source `id` as rowid, so the trigger payload only needs to forward the
+/// indexed columns. Bound to `tokenize='trigram'` for substring matching with
+/// 1–2 character typo tolerance — used by `browse::search` when the query is
+/// at least 3 chars long.
+const FTS5_SQL: &str = r#"
+CREATE VIRTUAL TABLE IF NOT EXISTS albums_fts USING fts5(
+  album_norm,
+  effective_album_artist_norm,
+  content='albums',
+  content_rowid='id',
+  tokenize='trigram'
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS tracks_fts USING fts5(
+  title_norm,
+  artist_norm,
+  composer_norm,
+  conductor_norm,
+  performer_norm,
+  genre_norm,
+  content='tracks',
+  content_rowid='id',
+  tokenize='trigram'
+);
+
+CREATE TRIGGER IF NOT EXISTS albums_ai AFTER INSERT ON albums BEGIN
+  INSERT INTO albums_fts(rowid, album_norm, effective_album_artist_norm)
+  VALUES (new.id, new.album_norm, new.effective_album_artist_norm);
+END;
+CREATE TRIGGER IF NOT EXISTS albums_ad AFTER DELETE ON albums BEGIN
+  INSERT INTO albums_fts(albums_fts, rowid, album_norm, effective_album_artist_norm)
+  VALUES('delete', old.id, old.album_norm, old.effective_album_artist_norm);
+END;
+CREATE TRIGGER IF NOT EXISTS albums_au AFTER UPDATE ON albums BEGIN
+  INSERT INTO albums_fts(albums_fts, rowid, album_norm, effective_album_artist_norm)
+  VALUES('delete', old.id, old.album_norm, old.effective_album_artist_norm);
+  INSERT INTO albums_fts(rowid, album_norm, effective_album_artist_norm)
+  VALUES (new.id, new.album_norm, new.effective_album_artist_norm);
+END;
+
+CREATE TRIGGER IF NOT EXISTS tracks_ai AFTER INSERT ON tracks BEGIN
+  INSERT INTO tracks_fts(rowid, title_norm, artist_norm, composer_norm, conductor_norm, performer_norm, genre_norm)
+  VALUES (new.id, new.title_norm, new.artist_norm, new.composer_norm, new.conductor_norm, new.performer_norm, new.genre_norm);
+END;
+CREATE TRIGGER IF NOT EXISTS tracks_ad AFTER DELETE ON tracks BEGIN
+  INSERT INTO tracks_fts(tracks_fts, rowid, title_norm, artist_norm, composer_norm, conductor_norm, performer_norm, genre_norm)
+  VALUES('delete', old.id, old.title_norm, old.artist_norm, old.composer_norm, old.conductor_norm, old.performer_norm, old.genre_norm);
+END;
+CREATE TRIGGER IF NOT EXISTS tracks_au AFTER UPDATE ON tracks BEGIN
+  INSERT INTO tracks_fts(tracks_fts, rowid, title_norm, artist_norm, composer_norm, conductor_norm, performer_norm, genre_norm)
+  VALUES('delete', old.id, old.title_norm, old.artist_norm, old.composer_norm, old.conductor_norm, old.performer_norm, old.genre_norm);
+  INSERT INTO tracks_fts(rowid, title_norm, artist_norm, composer_norm, conductor_norm, performer_norm, genre_norm)
+  VALUES (new.id, new.title_norm, new.artist_norm, new.composer_norm, new.conductor_norm, new.performer_norm, new.genre_norm);
+END;
+"#;
+
 pub fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch(SCHEMA_SQL)?;
     // Upgrade existing DBs to the play_count / last_played_at columns added in
@@ -194,10 +253,36 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     // upgrade; idempotent (only rows where the source field is non-null and
     // the norm field is still null are touched).
     backfill_search_norms(conn)?;
+    // #28: FTS5 trigram virtual tables + sync triggers. Must run AFTER the
+    // `*_norm` columns exist (CREATE references them) AND after the backfill
+    // (so 'rebuild' has the populated norm values to index). Idempotent via
+    // `IF NOT EXISTS` on every CREATE; the trigger set is fixed-shape so a
+    // second migrate() is a no-op.
+    ensure_search_fts(conn)?;
     // Write schema_version only after all ALTERs succeed. By **not writing on
     // pre-init or failure**, we keep the invariant: "migrate completed" ⇒ "schema
     // matches SCHEMA_VERSION".
     state_kv::set(conn, "schema_version", &SCHEMA_VERSION.to_string())?;
+    Ok(())
+}
+
+/// #28: Create the FTS5 virtual tables and sync triggers, then `'rebuild'`
+/// each index from the backing source so existing rows become searchable
+/// immediately on upgrade. Rebuild is the official FTS5 way to repopulate
+/// an external-content table (`https://sqlite.org/fts5.html#the_rebuild_command`)
+/// and is fast at the 88k-track baseline (whole rebuild well under a second).
+///
+/// Idempotent: on a fresh DB the `CREATE VIRTUAL TABLE` lays out the indexes,
+/// then `'rebuild'` runs against zero rows (no-op). On a second migrate the
+/// `IF NOT EXISTS` short-circuits and 'rebuild' just refreshes — also fine.
+fn ensure_search_fts(conn: &Connection) -> Result<()> {
+    conn.execute_batch(FTS5_SQL)?;
+    // Repopulate from the source tables. Safe to run on every migrate: the
+    // triggers above keep the index live, so the only cost here is a single
+    // bulk scan on upgrade. Two separate statements (FTS5's rebuild command
+    // only addresses one virtual table at a time).
+    conn.execute("INSERT INTO albums_fts(albums_fts) VALUES('rebuild')", [])?;
+    conn.execute("INSERT INTO tracks_fts(tracks_fts) VALUES('rebuild')", [])?;
     Ok(())
 }
 

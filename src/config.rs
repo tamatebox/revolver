@@ -11,6 +11,10 @@ pub struct Config {
     pub library: Library,
     pub scan: Scan,
     pub browse: Browse,
+    /// Optional `[search]` section. Older configs that predate #28 omit it
+    /// entirely and inherit the defaults below.
+    #[serde(default)]
+    pub search: Search,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,6 +55,31 @@ pub struct Library {
 pub struct Scan {
     pub on_startup: bool,
     pub parallel: usize,
+}
+
+/// `[search]` section (#28). Toggles typo-tolerant FTS5 trigram matching on
+/// top of the existing NFKD shadow-column LIKE path.
+#[derive(Debug, Deserialize)]
+pub struct Search {
+    /// When true (the default), queries of length ≥ 3 also run against the
+    /// FTS5 trigram indexes, so a 1–2 character typo still surfaces a hit
+    /// (ranked below exact / contains matches). Set to false to fall back to
+    /// the pre-#28 LIKE-only behavior on libraries where the extra recall
+    /// produces too many false positives.
+    #[serde(default = "default_search_fuzzy_enabled")]
+    pub fuzzy_enabled: bool,
+}
+
+impl Default for Search {
+    fn default() -> Self {
+        Self {
+            fuzzy_enabled: default_search_fuzzy_enabled(),
+        }
+    }
+}
+
+fn default_search_fuzzy_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]

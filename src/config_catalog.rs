@@ -186,6 +186,18 @@ pub const CATALOG: &[ConfigKey] = &[
         validate: validate_nullable_positive_int,
         choices: None,
     },
+    ConfigKey {
+        key: "search.fuzzy_enabled",
+        label: "Fuzzy Search (typo tolerance)",
+        description: "Tolerate 1–2 character typos in Album / Artist / Track / \
+                      Composer searches via FTS5 trigram. Exact and contains hits \
+                      still rank above typo hits; turn off if a library produces \
+                      too many false positives.",
+        reload_tier: ReloadTier::Runtime,
+        default: default_search_fuzzy_enabled,
+        validate: validate_bool,
+        choices: None,
+    },
 ];
 
 pub fn find(key: &str) -> Option<&'static ConfigKey> {
@@ -215,6 +227,17 @@ fn default_random_albums_limit(c: &Config) -> Value {
 
 fn default_top_level(c: &Config) -> Value {
     serde_json::json!(c.browse.top_level)
+}
+
+fn default_search_fuzzy_enabled(c: &Config) -> Value {
+    Value::Bool(c.search.fuzzy_enabled)
+}
+
+fn validate_bool(v: &Value) -> std::result::Result<Value, String> {
+    match v.as_bool() {
+        Some(b) => Ok(Value::Bool(b)),
+        None => Err("must be a boolean".to_string()),
+    }
 }
 
 fn validate_positive_int(v: &Value) -> std::result::Result<Value, String> {
@@ -312,11 +335,18 @@ pub fn build_browse_settings(defaults: &DefaultsMap, conn: &Connection) -> Resul
                 .collect::<Vec<_>>()
         })
         .unwrap_or_else(crate::config::default_top_level);
+    // #28: missing key (older config_overrides table, or a fresh DB before the
+    // first POST) defaults to true. `as_bool()` returns None for non-bool JSON,
+    // which we also treat as the safe default rather than failing the build.
+    let search_fuzzy_enabled = effective_value(defaults, conn, "search.fuzzy_enabled")?
+        .as_bool()
+        .unwrap_or(true);
     Ok(BrowseSettings::from_parts(
         recently,
         max_age_days,
         random,
         top_level,
+        search_fuzzy_enabled,
     ))
 }
 
