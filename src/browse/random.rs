@@ -15,11 +15,26 @@ use crate::error::Result;
 /// The configured `browse.random_albums_limit` is applied at reshuffle time
 /// (see [`crate::random::RandomState::reshuffle`]); both `random_state.len()`
 /// and `page()` already reflect the cap, so no additional clamp is needed.
+///
+/// When `browse.random_albums_shuffle_interval_hours` is set, the first Browse
+/// after the interval elapses re-rolls the array before reading it. Failures
+/// are logged but non-fatal: we fall back to the previous order so the view
+/// never serves an empty result purely because the lazy reshuffle stumbled.
 pub fn random_albums_children(
     ctx: &BrowseContext,
     start: usize,
     count: usize,
 ) -> Result<ChildrenResult> {
+    let interval = ctx
+        .settings
+        .random_albums_shuffle_interval_hours
+        .map(|h| std::time::Duration::from_secs(u64::from(h) * 3600));
+    if let Err(e) =
+        ctx.random_state
+            .maybe_reshuffle(ctx.conn, ctx.settings.random_albums_limit, interval)
+    {
+        tracing::warn!(error = %e, "lazy cat:random reshuffle failed; serving previous order");
+    }
     let ids = ctx.random_state.page(start, count);
     let total = ctx.random_state.len();
 

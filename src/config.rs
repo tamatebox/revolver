@@ -96,6 +96,12 @@ pub struct Browse {
     /// the full album population is shuffled and surfaced.
     #[serde(default)]
     pub random_albums_limit: Option<usize>,
+    /// Re-roll `cat:random` lazily once this many hours have elapsed since the
+    /// last reshuffle. The check fires at Browse time, so idle hours cost
+    /// nothing. `None` (the default) keeps the legacy event-driven behavior:
+    /// reshuffle only on startup / post-scan / `POST /admin/reshuffle`.
+    #[serde(default)]
+    pub random_albums_shuffle_interval_hours: Option<u32>,
 
     /// Selection and order of top-level facets surfaced at ObjectID "0"
     /// (SPEC §6.2, issue #8). Unknown / disabled entries are silently

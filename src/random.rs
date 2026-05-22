@@ -1,12 +1,15 @@
 //! Shuffle state for the Random Albums view (SPEC §6.6).
 //!
 //! Holds an album_id array in `Mutex<Vec<i64>>` and fully reshuffles on startup,
-//! scan completion, and `POST /admin/reshuffle`.
+//! scan completion, `POST /admin/reshuffle`, and — when
+//! `browse.random_albums_shuffle_interval_hours` is set — lazily at Browse time
+//! once the configured interval has elapsed since the last reshuffle.
 //!
 //! Stale album_ids left in the array during transient states (e.g. mid-scan) do
 //! not break anything: `browse::random` skips them on individual `SELECT`.
 
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use rand::seq::SliceRandom;
 use rusqlite::Connection;
@@ -15,6 +18,11 @@ use crate::error::Result;
 
 pub struct RandomState {
     album_ids: Mutex<Vec<i64>>,
+    /// Monotonic timestamp of the last successful `reshuffle` call. `None` until
+    /// the first reshuffle has run. Used by `maybe_reshuffle` to gate the lazy
+    /// interval-based re-roll; `Instant` so it is not affected by wall-clock
+    /// adjustments.
+    last_shuffled_at: Mutex<Option<Instant>>,
 }
 
 impl Default for RandomState {
@@ -27,6 +35,7 @@ impl RandomState {
     pub fn new() -> Self {
         Self {
             album_ids: Mutex::new(Vec::new()),
+            last_shuffled_at: Mutex::new(None),
         }
     }
 
@@ -51,7 +60,46 @@ impl RandomState {
         let len = ids.len();
         let mut guard = self.album_ids.lock().unwrap_or_else(|e| e.into_inner());
         *guard = ids;
+        drop(guard);
+        *self
+            .last_shuffled_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
         Ok(len)
+    }
+
+    /// Reshuffle only if `interval` has elapsed since the previous reshuffle.
+    /// `None` for `interval` keeps the legacy event-driven behavior (no lazy
+    /// reshuffle). Returns whether a reshuffle actually ran.
+    ///
+    /// Called from `browse::random_albums_children` so the next viewer of
+    /// `cat:random` after the interval lapses sees a fresh order, without
+    /// burning a tokio interval task on idle hours. The Mutex guard is dropped
+    /// before the (potentially) slow `SELECT id FROM albums` so concurrent
+    /// `page()` / `len()` calls are not blocked.
+    pub fn maybe_reshuffle(
+        &self,
+        conn: &Connection,
+        limit: Option<usize>,
+        interval: Option<Duration>,
+    ) -> Result<bool> {
+        let Some(interval) = interval else {
+            return Ok(false);
+        };
+        let now = Instant::now();
+        {
+            let guard = self
+                .last_shuffled_at
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(last) = *guard {
+                if now.saturating_duration_since(last) < interval {
+                    return Ok(false);
+                }
+            }
+        }
+        self.reshuffle(conn, limit)?;
+        Ok(true)
     }
 
     /// Return a cloned `Vec` of the `[start, start+count)` slice of the array.
@@ -198,5 +246,67 @@ mod tests {
         let n = s.reshuffle(&conn, None).unwrap();
         assert_eq!(n, 7);
         assert_eq!(s.len(), 7);
+    }
+
+    #[test]
+    fn ra9_maybe_reshuffle_none_interval_is_noop() {
+        // interval = None preserves the legacy event-driven behavior.
+        let conn = open();
+        seed_n_albums(&conn, 5);
+        let s = RandomState::new();
+        let ran = s.maybe_reshuffle(&conn, None, None).unwrap();
+        assert!(!ran);
+        assert!(
+            s.is_empty(),
+            "no implicit first reshuffle when interval is None"
+        );
+    }
+
+    #[test]
+    fn ra10_maybe_reshuffle_runs_on_first_call_with_interval() {
+        // First call with a set interval: last_shuffled_at is None, so any
+        // elapsed time >= interval (trivially true) triggers an initial shuffle.
+        let conn = open();
+        seed_n_albums(&conn, 5);
+        let s = RandomState::new();
+        let ran = s
+            .maybe_reshuffle(&conn, None, Some(Duration::from_secs(3600)))
+            .unwrap();
+        assert!(ran);
+        assert_eq!(s.len(), 5);
+    }
+
+    #[test]
+    fn ra11_maybe_reshuffle_skips_when_interval_not_elapsed() {
+        // After a reshuffle, an immediate `maybe_reshuffle` with a large
+        // interval must not run a second shuffle.
+        let conn = open();
+        seed_n_albums(&conn, 100);
+        let s = RandomState::new();
+        s.reshuffle(&conn, None).unwrap();
+        let before = s.page(0, 100);
+        let ran = s
+            .maybe_reshuffle(&conn, None, Some(Duration::from_secs(3600)))
+            .unwrap();
+        assert!(!ran);
+        assert_eq!(s.page(0, 100), before, "order must be unchanged");
+    }
+
+    #[test]
+    fn ra12_maybe_reshuffle_runs_when_interval_zero() {
+        // interval = 0 means "every Browse re-rolls"; the second call must run
+        // even though virtually no real time has elapsed since the first.
+        let conn = open();
+        seed_n_albums(&conn, 100);
+        let s = RandomState::new();
+        s.maybe_reshuffle(&conn, None, Some(Duration::ZERO))
+            .unwrap();
+        let first = s.page(0, 100);
+        let ran = s
+            .maybe_reshuffle(&conn, None, Some(Duration::ZERO))
+            .unwrap();
+        assert!(ran);
+        let second = s.page(0, 100);
+        assert_ne!(first, second, "two zero-interval reshuffles should differ");
     }
 }

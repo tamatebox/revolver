@@ -23,6 +23,12 @@ pub struct BrowseSettings {
     /// Cap on the shuffled `cat:random` array (SPEC §6.6). `None` (the default)
     /// means no cap — every album is shuffled in.
     pub random_albums_limit: Option<usize>,
+    /// Lazy re-roll interval (in hours) for `cat:random`. `None` (the default)
+    /// means no time-based reshuffle — the array is only re-rolled at the
+    /// event-driven trigger points (startup / post-scan / admin reshuffle).
+    /// When set, the next Browse after this many hours have elapsed since the
+    /// last reshuffle re-rolls the array first.
+    pub random_albums_shuffle_interval_hours: Option<u32>,
     /// Selection and order of root-container facets (#8, SPEC §6.2). Unknown
     /// or disabled entries are silently dropped by `root_children`. Hi-Res /
     /// Lossy / Mixed Quality are surfaced solely by this list — drop the
@@ -111,6 +117,7 @@ impl BrowseSettings {
         recently_added_limit: Option<usize>,
         recently_added_max_age_days: Option<u32>,
         random_albums_limit: Option<usize>,
+        random_albums_shuffle_interval_hours: Option<u32>,
         top_level: Vec<String>,
         search_fuzzy_enabled: bool,
     ) -> Self {
@@ -118,6 +125,7 @@ impl BrowseSettings {
             recently_added_limit: recently_added_limit.map(|n| n.max(1)),
             recently_added_max_age_days,
             random_albums_limit: random_albums_limit.map(|n| n.max(1)),
+            random_albums_shuffle_interval_hours,
             top_level,
             search_fuzzy_enabled,
         }
@@ -130,6 +138,7 @@ impl Default for BrowseSettings {
             recently_added_limit: None,
             recently_added_max_age_days: None,
             random_albums_limit: None,
+            random_albums_shuffle_interval_hours: None,
             top_level: crate::config::default_top_level(),
             search_fuzzy_enabled: true,
         }

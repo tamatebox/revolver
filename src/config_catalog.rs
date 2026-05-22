@@ -187,6 +187,18 @@ pub const CATALOG: &[ConfigKey] = &[
         choices: None,
     },
     ConfigKey {
+        key: "browse.random_albums_shuffle_interval_hours",
+        label: "Random Albums — auto re-roll (hours)",
+        description: "Re-roll the Random Albums order lazily when the next \
+                      Browse arrives this many hours after the previous \
+                      reshuffle. Idle hours cost nothing. Leave empty to keep \
+                      the order fixed between startup / scan / manual reshuffle.",
+        reload_tier: ReloadTier::Runtime,
+        default: default_random_albums_shuffle_interval_hours,
+        validate: validate_nullable_positive_int,
+        choices: None,
+    },
+    ConfigKey {
         key: "search.fuzzy_enabled",
         label: "Fuzzy Search (typo tolerance)",
         description: "Tolerate 1–2 character typos in Album / Artist / Track / \
@@ -220,6 +232,13 @@ fn default_recently_added_max_age_days(c: &Config) -> Value {
 
 fn default_random_albums_limit(c: &Config) -> Value {
     match c.browse.random_albums_limit {
+        Some(n) => serde_json::json!(n),
+        None => Value::Null,
+    }
+}
+
+fn default_random_albums_shuffle_interval_hours(c: &Config) -> Value {
+    match c.browse.random_albums_shuffle_interval_hours {
         Some(n) => serde_json::json!(n),
         None => Value::Null,
     }
@@ -327,6 +346,18 @@ pub fn build_browse_settings(defaults: &DefaultsMap, conn: &Connection) -> Resul
             v.as_u64().map(|n| n as usize)
         }
     };
+    let random_interval_hours = {
+        let v = effective_value(
+            defaults,
+            conn,
+            "browse.random_albums_shuffle_interval_hours",
+        )?;
+        if v.is_null() {
+            None
+        } else {
+            v.as_u64().map(|n| n.min(u32::MAX as u64) as u32)
+        }
+    };
     let top_level = effective_value(defaults, conn, "browse.top_level")?
         .as_array()
         .map(|arr| {
@@ -345,6 +376,7 @@ pub fn build_browse_settings(defaults: &DefaultsMap, conn: &Connection) -> Resul
         recently,
         max_age_days,
         random,
+        random_interval_hours,
         top_level,
         search_fuzzy_enabled,
     ))

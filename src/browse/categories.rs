@@ -822,6 +822,7 @@ mod tests {
             Some(50),
             None,
             Some(100),
+            None,
             vec![
                 "cat:recent".into(),
                 "cat:al".into(),
@@ -847,6 +848,7 @@ mod tests {
             Some(50),
             None,
             Some(100),
+            None,
             vec![
                 "cat:aa".into(),
                 "cat:nope".into(),
@@ -871,6 +873,7 @@ mod tests {
             Some(50),
             None,
             Some(100),
+            None,
             vec!["cat:aa".into(), "cat:al".into()],
             true,
         );
@@ -890,6 +893,7 @@ mod tests {
             Some(50),
             None,
             Some(100),
+            None,
             vec![
                 "cat:aa".into(),
                 "cat:cm".into(),
@@ -908,7 +912,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::schema::migrate(&conn).unwrap();
         let rs = RandomState::new();
-        let s = BrowseSettings::from_parts(Some(50), None, Some(100), vec![], true);
+        let s = BrowseSettings::from_parts(Some(50), None, Some(100), None, vec![], true);
         let r = root_children(&ctx_with(&conn, &rs, &s));
         assert_eq!(r.total_matches, 0);
         assert!(r.didl.containers.is_empty());
