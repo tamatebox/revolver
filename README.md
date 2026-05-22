@@ -236,6 +236,8 @@ builds and pushes a multi-arch image (`linux/amd64`, `linux/arm64`) to
 
 MIT. See [`Cargo.toml`](Cargo.toml).
 
+Bundled third-party assets (currently: two icon paths adapted from [Lucide](https://lucide.dev/), ISC-licensed) are listed in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
+
 ---
 
 For deeper technical details, see [`SPEC.md`](SPEC.md) (data model, protocol, design decisions) and [`ARCHITECTURE.md`](ARCHITECTURE.md) (module layout and data flow).

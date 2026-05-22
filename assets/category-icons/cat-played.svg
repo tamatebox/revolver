@@ -1,16 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- revolver — category icon for `cat:played` (Recently Played). Centred play triangle + smaller orange counterclockwise badge tucked inside the rounded-corner safe zone (no bleed past the tile edge). -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" shape-rendering="geometricPrecision">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
   <rect x="2" y="2" width="116" height="116" rx="24" fill="#ede4d0"/>
   <rect x="2" y="2" width="116" height="116" rx="24" fill="none" stroke="#c8bea4" stroke-width="0.8"/>
 
-  <!-- Play triangle, centred -->
-  <path d="M 34 38 L 34 90 L 78 64 Z" fill="#161616"/>
+  <g transform="translate(60 60) scale(3.556) translate(-12 -12)"
+     fill="none" stroke="#161616" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3.3 7.6" stroke-width="2"/>
+    <path d="M3 3v5h5" stroke-width="1.4"/>
+  </g>
 
-  <!-- Orange counterclockwise badge — pulled inward so the arc and the
-       arrowhead stay well clear of the upper-right rounded corner. -->
-  <path d="M 94 28
-           A 14 14 0 1 0 82 44"
-        fill="none" stroke="#d6651f" stroke-width="6" stroke-linecap="round"/>
-  <path d="M 94 28 L 88 20 L 102 24 Z" fill="#d6651f"/>
+  <!-- Play triangle, ORANGE -->
+  <path d="M 54 50 L 54 70 L 72 60 Z" fill="#d6651f"/>
 </svg>
