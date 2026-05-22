@@ -311,10 +311,9 @@
     }
     .array-item {
       display: grid;
-      /* The trailing 1fr column absorbs leftover row width so move-btns
-         (justify-self: end below) snaps to the right edge regardless of
-         how long the label happens to be. */
-      grid-template-columns: auto auto auto 1fr;
+      /* Col 3 (1fr) absorbs leftover row width so col 4 — pinned to
+         move-btns via explicit grid-column — sits at the right edge. */
+      grid-template-columns: auto auto 1fr auto;
       align-items: center;
       gap: 0.4em;
       padding: 0.3em 0.35em;
@@ -342,6 +341,11 @@
     .move-btns {
       display: none;
       gap: 0.15em;
+      /* Explicit column placement: drag-handle becomes display:none on
+         mobile, which removes it from the grid and would otherwise pull
+         move-btns left into col 3 via auto-placement. Pinning to col 4
+         keeps it at the row's right edge in every layout. */
+      grid-column: 4;
       justify-self: end;
     }
     .move-btn {
