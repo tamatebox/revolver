@@ -311,7 +311,7 @@
     }
     .array-item {
       display: grid;
-      grid-template-columns: auto auto 1fr;
+      grid-template-columns: auto auto 1fr auto;
       align-items: center;
       gap: 0.4em;
       padding: 0.3em 0.35em;
@@ -333,6 +333,33 @@
       color: var(--danger);
       font-style: italic;
     }
+    /* Up / down buttons — primary reorder UI on touch devices (where HTML5
+       drag-and-drop doesn't fire). Always visible so the affordance is
+       discoverable and keyboard-accessible too. */
+    .move-btns {
+      display: flex;
+      gap: 0.15em;
+    }
+    .move-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 0.1em 0.4em;
+      margin: 0;
+      cursor: pointer;
+      border-radius: 4px;
+      font-size: 0.75em;
+      font-weight: 400;
+      line-height: 1.2;
+      min-width: 1.6em;
+      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    }
+    .move-btn:hover:not(:disabled) {
+      background: var(--accent-soft);
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+    .move-btn:disabled { opacity: 0.3; cursor: not-allowed; }
     /* Hidden categories live in a subtly-tinted sub-area to differentiate
        them from the active set without adding cognitive noise. */
     .array-section-hidden {
@@ -388,6 +415,18 @@
       button {
         margin-right: 0.3em;
         margin-bottom: 0.4em;
+      }
+      /* Drag handle does nothing on touch — hide it and rely on ↑/↓ buttons. */
+      .drag-handle { display: none; }
+      .array-item.draggable { cursor: default; }
+      .move-btn {
+        padding: 0.35em 0.7em;
+        font-size: 0.9em;
+        min-width: 2.2em;
+      }
+      .move-btn:not(:disabled):active {
+        background: var(--accent-soft);
+        color: var(--accent);
       }
     }
   </style>
@@ -755,7 +794,7 @@
 
         const enabledLabel = document.createElement("div");
         enabledLabel.className = "array-group-label";
-        enabledLabel.textContent = "Visible — drag to reorder, uncheck to hide";
+        enabledLabel.textContent = "Visible — drag or use ↑↓ to reorder, uncheck to hide";
         wrap.appendChild(enabledLabel);
 
         const enabledList = document.createElement("div");
@@ -836,6 +875,41 @@
             render();
             refreshDirty();
           });
+
+          // ↑/↓ buttons — touch-friendly reorder. Drag-and-drop is the
+          // desktop power-user shortcut; these are the primary path on
+          // mobile (and a keyboard-accessible path everywhere).
+          const moveBtns = document.createElement("div");
+          moveBtns.className = "move-btns";
+          const moveBy = (delta) => {
+            const target = idx + delta;
+            if (target < 0 || target >= enabled.length) return;
+            const next = state.current.slice();
+            [next[idx], next[target]] = [next[target], next[idx]];
+            state.current = next;
+            render();
+            refreshDirty();
+          };
+          const upBtn = document.createElement("button");
+          upBtn.type = "button";
+          upBtn.className = "move-btn";
+          upBtn.textContent = "↑";
+          upBtn.title = "move up";
+          upBtn.disabled = idx === 0;
+          upBtn.addEventListener("click", () => moveBy(-1));
+          moveBtns.appendChild(upBtn);
+          const downBtn = document.createElement("button");
+          downBtn.type = "button";
+          downBtn.className = "move-btn";
+          downBtn.textContent = "↓";
+          downBtn.title = "move down";
+          downBtn.disabled = idx === enabled.length - 1;
+          downBtn.addEventListener("click", () => moveBy(1));
+          moveBtns.appendChild(downBtn);
+          // The move buttons must not initiate a drag of the parent row.
+          moveBtns.draggable = false;
+          moveBtns.addEventListener("mousedown", (ev) => ev.stopPropagation());
+          item.appendChild(moveBtns);
 
           enabledList.appendChild(item);
         });
