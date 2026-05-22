@@ -249,9 +249,17 @@ fn search_albums(
     })
 }
 
-/// Ranked Album-search for the single `dc:title contains "X"` case. The
-/// WHERE clause matches the same 3-way OR as `predicate_to_sql_albums`
-/// Title branch; ORDER BY layers a CASE so the most "obvious" hits come first:
+/// Ranked Album-search for the single `dc:title contains "X"` case.
+///
+/// **Two-stage fall-through design** (#28): LIKE substring match is tried
+/// first; only when it returns zero rows does the fuzzy FTS5 path run.
+/// This keeps the typical case (`Beatles` → `The Beatles`) clean and
+/// surfaces typo candidates (`Beatlse` → `The Beatles`) only when the
+/// substring path has nothing to offer. Mixing the two would mean every
+/// `Beatles` query also dragged in a tail of trigram-overlap noise,
+/// which was the pre-fall-through behavior.
+///
+/// LIKE stage buckets:
 ///
 /// | Rank | Match                                                |
 /// |------|------------------------------------------------------|
@@ -259,31 +267,18 @@ fn search_albums(
 /// | 1    | effective_album_artist contains X (artist's own)     |
 /// | 2    | album name contains X                                |
 /// | 3    | only a track-level `tracks.artist` carries X (comp)  |
-/// | 4    | trigram-only typo hit (#28, fuzzy path)              |
 ///
-/// Rationale: an artist-name query (e.g. "Beatles") usually means "show me
-/// this person's records", so the artist-hit bucket beats a partial-album
-/// hit like "Beatles Anthology" that happens to carry the same substring.
-/// Bucket 4 only appears when the fuzzy path is on AND the normalized query
-/// is at least [`FTS5_MIN_CHARS`] characters; an `albums_fts MATCH` row that
-/// also satisfies one of the LIKE branches still ranks in its higher bucket
-/// because the CASE is evaluated top-down.
+/// Rationale for ordering: an artist-name query (e.g. `Beatles`) usually
+/// means "show me this person's records", so the artist-hit bucket beats
+/// a partial-album hit like `Beatles Anthology` that happens to carry the
+/// same substring.
 ///
-/// Bucket-4 noise control (#28 refinement): trigram-OR alone admits any row
-/// that shares even one 3-gram with the query (`atl` matches both `beatles`
-/// and `atlas`). Each FTS5 candidate's `album_norm` / `effective_album_artist_norm`
-/// is therefore additionally required to clear `jaccard_trigram >= 0.2`. The
-/// threshold is intentionally below PostgreSQL `pg_trgm`'s default of 0.3
-/// because that default cuts realistic music-tag pairs like `"beatlse"` vs
-/// `"the beatles"` (Jaccard ≒ 0.27) — short queries against long names with
-/// prefixes/suffixes ("The …", "… Orchestra", etc.) need the lower bar.
-/// The same Jaccard score breaks ties inside the bucket so the closest
-/// typo candidate rises to the top.
-///
-/// Placeholders: `?1` = `%X%` LIKE value, `?2` = normalized exact value
-/// (bucket-0 equality compare and Jaccard RHS), `?3` = FTS5 trigram-OR query
-/// (only when fuzzy is eligible). LIMIT / OFFSET indices shift per branch
-/// so cached statements stay distinct.
+/// Fuzzy stage: FTS5 trigram-OR candidates (`albums_fts MATCH`) that
+/// additionally clear `jaccard_trigram >= 0.2` against either column.
+/// Threshold is intentionally below PostgreSQL `pg_trgm`'s default of
+/// 0.3 — that default cuts realistic music-tag pairs like `"beatlse"` vs
+/// `"the beatles"` (Jaccard ≒ 0.27). Results are ranked by Jaccard score
+/// descending so the closest typo candidate appears first.
 fn search_albums_ranked(
     ctx: &BrowseContext,
     value: &str,
@@ -292,95 +287,120 @@ fn search_albums_ranked(
 ) -> Result<SearchResult> {
     let norm = crate::normalize::for_search(value);
     let like_pat = format!("%{}%", norm);
-    let fuzzy = fuzzy_eligible(ctx, &norm);
 
-    // Two SQL shapes: one with the FTS5 OR branch + bucket-4 CASE arm, one
-    // without. Keeping them separate lets `prepare_cached` reuse each plan,
-    // and avoids paying the trigram MATCH cost on short / disabled queries.
-    let (where_sql, order_case_extra, order_jaccard_tiebreak, lim_idx, off_idx) = if fuzzy {
-        (
-            "album_norm LIKE ?1
-             OR effective_album_artist_norm LIKE ?1
-             OR EXISTS (SELECT 1 FROM tracks WHERE album_id = albums.id AND artist_norm LIKE ?1)
-             OR (
-                 albums.id IN (SELECT rowid FROM albums_fts WHERE albums_fts MATCH ?3)
-                 AND MAX(
-                     jaccard_trigram(album_norm, ?2),
-                     jaccard_trigram(effective_album_artist_norm, ?2)
-                 ) >= 0.2
-             )",
-            "ELSE 4",
-            "MAX(
-                 jaccard_trigram(album_norm, ?2),
-                 jaccard_trigram(effective_album_artist_norm, ?2)
-             ) DESC,",
-            4,
-            5,
-        )
-    } else {
-        (
-            "album_norm LIKE ?1
+    // Stage 1: substring (LIKE) path — also serves as the gating COUNT
+    // for the fall-through decision. The COUNT here is over the full
+    // result, not just the page, so pagination doesn't accidentally
+    // trigger the fuzzy fallback on tail pages.
+    let like_total: i64 = ctx.conn.query_row(
+        "SELECT COUNT(*) FROM albums WHERE
+             album_norm LIKE ?1
              OR effective_album_artist_norm LIKE ?1
              OR EXISTS (SELECT 1 FROM tracks WHERE album_id = albums.id AND artist_norm LIKE ?1)",
-            "ELSE 3",
-            "",
-            3,
-            4,
-        )
-    };
+        rusqlite::params![&like_pat],
+        |r| r.get(0),
+    )?;
 
-    let phrase = if fuzzy {
-        fts5_trigram_or(&norm)
-    } else {
-        String::new()
-    };
+    if like_total > 0 || !fuzzy_eligible(ctx, &norm) {
+        return albums_like_results(ctx, &like_pat, &norm, like_total, start, count);
+    }
 
-    let total: i64 = if fuzzy {
-        ctx.conn.query_row(
-            &format!("SELECT COUNT(*) FROM albums WHERE {where_sql}"),
-            rusqlite::params![&like_pat, &norm, &phrase],
-            |r| r.get(0),
-        )?
-    } else {
-        ctx.conn.query_row(
-            &format!("SELECT COUNT(*) FROM albums WHERE {where_sql}"),
-            rusqlite::params![&like_pat],
-            |r| r.get(0),
-        )?
-    };
+    // Stage 2: fuzzy fallback. LIKE found nothing AND the query is long
+    // enough (≥ 3 normalized chars) for trigrams to make sense.
+    albums_fuzzy_results(ctx, &norm, start, count)
+}
 
-    let sql = format!(
-        "SELECT id, album, effective_album_artist, track_count
+/// LIKE-only result rendering for `search_albums_ranked`. Caller has
+/// already produced the full COUNT (`total`); this function only fetches
+/// the requested page and emits containers.
+fn albums_like_results(
+    ctx: &BrowseContext,
+    like_pat: &str,
+    norm: &str,
+    total: i64,
+    start: usize,
+    count: usize,
+) -> Result<SearchResult> {
+    let sql = "SELECT id, album, effective_album_artist, track_count
          FROM albums
-         WHERE {where_sql}
+         WHERE album_norm LIKE ?1
+             OR effective_album_artist_norm LIKE ?1
+             OR EXISTS (SELECT 1 FROM tracks WHERE album_id = albums.id AND artist_norm LIKE ?1)
          ORDER BY
            CASE
              WHEN album_norm = ?2 THEN 0
              WHEN effective_album_artist_norm LIKE ?1 THEN 1
              WHEN album_norm LIKE ?1 THEN 2
-             WHEN EXISTS (SELECT 1 FROM tracks WHERE album_id = albums.id AND artist_norm LIKE ?1) THEN 3
-             {order_case_extra}
+             ELSE 3
            END,
-           {order_jaccard_tiebreak}
            album_norm
-         LIMIT ?{lim_idx} OFFSET ?{off_idx}"
+         LIMIT ?3 OFFSET ?4";
+    let mut stmt = ctx.conn.prepare_cached(sql)?;
+    let rows: Vec<(i64, String, String, i64)> = stmt
+        .query_map(
+            rusqlite::params![like_pat, norm, count as i64, start as i64],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let containers: Vec<Container> = rows
+        .into_iter()
+        .map(|(id, album, aa, tc)| album_container(ctx, id, &album, &aa, tc, "cat:al"))
+        .collect();
+    Ok(SearchResult {
+        didl: DidlOutput {
+            containers,
+            items: vec![],
+            nodes: vec![],
+        },
+        total_matches: total as usize,
+    })
+}
+
+/// Fuzzy fallback for `search_albums_ranked`. Called only when LIKE
+/// returned zero rows and `fuzzy_eligible` is true. FTS5 trigram-OR
+/// produces candidates; `jaccard_trigram >= 0.2` against either album
+/// column gates them; the higher of the two Jaccard scores orders the
+/// result so the closest typo candidate is first.
+fn albums_fuzzy_results(
+    ctx: &BrowseContext,
+    norm: &str,
+    start: usize,
+    count: usize,
+) -> Result<SearchResult> {
+    let phrase = fts5_trigram_or(norm);
+    let where_sql = "albums.id IN (SELECT rowid FROM albums_fts WHERE albums_fts MATCH ?1)
+         AND MAX(
+             jaccard_trigram(album_norm, ?2),
+             jaccard_trigram(effective_album_artist_norm, ?2)
+         ) >= 0.2";
+
+    let total: i64 = ctx.conn.query_row(
+        &format!("SELECT COUNT(*) FROM albums WHERE {where_sql}"),
+        rusqlite::params![&phrase, norm],
+        |r| r.get(0),
+    )?;
+
+    let sql = format!(
+        "SELECT id, album, effective_album_artist, track_count
+         FROM albums
+         WHERE {where_sql}
+         ORDER BY MAX(
+             jaccard_trigram(album_norm, ?2),
+             jaccard_trigram(effective_album_artist_norm, ?2)
+         ) DESC,
+         album_norm
+         LIMIT ?3 OFFSET ?4"
     );
     let mut stmt = ctx.conn.prepare_cached(&sql)?;
-    let rows: Vec<(i64, String, String, i64)> = if fuzzy {
-        stmt.query_map(
-            rusqlite::params![&like_pat, &norm, &phrase, count as i64, start as i64],
+    let rows: Vec<(i64, String, String, i64)> = stmt
+        .query_map(
+            rusqlite::params![&phrase, norm, count as i64, start as i64],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?
         .filter_map(|r| r.ok())
-        .collect()
-    } else {
-        stmt.query_map(
-            rusqlite::params![&like_pat, &norm, count as i64, start as i64],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )?
-        .filter_map(|r| r.ok())
-        .collect()
-    };
+        .collect();
 
     let containers: Vec<Container> = rows
         .into_iter()
@@ -570,73 +590,97 @@ fn search_artists_value(
 ) -> Result<SearchResult> {
     let norm = crate::normalize::for_search(value);
     let like_pat = format!("%{}%", norm);
-    let fuzzy = fuzzy_eligible(ctx, &norm);
 
-    // Placeholders:
-    //   ?1 = `%X%` LIKE value
-    //   ?2 = FTS5 trigram-OR query for albums_fts (aa branch)
-    //   ?3 = FTS5 trigram-OR query for tracks_fts (tr branch)
-    //   ?4 = normalized exact value (Jaccard threshold + tie-break score)
-    let (aa_where, tr_where, params): (String, String, Vec<SqlValue>) = if fuzzy {
-        let aa_phrase = fts5_col_trigram_query("effective_album_artist_norm", &norm);
-        let tr_phrase = fts5_col_trigram_query("artist_norm", &norm);
-        (
-            "effective_album_artist_norm LIKE ?1
-             OR (
-                 id IN (SELECT rowid FROM albums_fts WHERE albums_fts MATCH ?2)
-                 AND jaccard_trigram(effective_album_artist_norm, ?4) >= 0.2
-             )"
-            .to_string(),
-            "artist_norm LIKE ?1
-             OR (
-                 id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?3)
-                 AND jaccard_trigram(artist_norm, ?4) >= 0.2
-             )"
-            .to_string(),
-            vec![
-                SqlValue::from(like_pat.clone()),
-                SqlValue::from(aa_phrase),
-                SqlValue::from(tr_phrase),
-                SqlValue::from(norm.clone()),
-            ],
-        )
-    } else {
-        (
-            "effective_album_artist_norm LIKE ?1".to_string(),
-            "artist_norm LIKE ?1".to_string(),
-            vec![SqlValue::from(like_pat.clone())],
-        )
-    };
-
-    let total_sql = format!(
+    // Stage 1: LIKE substring on both columns. UNION counts distinct names
+    // across the album_artist / track-artist worlds (#22).
+    let like_total: i64 = ctx.conn.query_row(
         "SELECT COUNT(*) FROM (
-           SELECT effective_album_artist AS name FROM albums WHERE {aa_where}
+            SELECT effective_album_artist AS name FROM albums
+              WHERE effective_album_artist_norm LIKE ?1
+            UNION
+            SELECT artist AS name FROM tracks
+              WHERE artist IS NOT NULL AND artist != '' AND artist_norm LIKE ?1
+         )",
+        rusqlite::params![&like_pat],
+        |r| r.get(0),
+    )?;
+
+    if like_total > 0 || !fuzzy_eligible(ctx, &norm) {
+        return artists_emit_rows(
+            ctx,
+            "effective_album_artist_norm LIKE ?1",
+            "artist_norm LIKE ?1",
+            vec![SqlValue::from(like_pat)],
+            None,
+            like_total,
+            start,
+            count,
+        );
+    }
+
+    // Stage 2: fuzzy fallback. FTS5 trigram-OR candidates gated by Jaccard
+    // ≥ 0.2 in each respective column.
+    let aa_phrase = fts5_col_trigram_query("effective_album_artist_norm", &norm);
+    let tr_phrase = fts5_col_trigram_query("artist_norm", &norm);
+    let fuzzy_total: i64 = ctx.conn.query_row(
+        "SELECT COUNT(*) FROM (
+           SELECT effective_album_artist AS name FROM albums
+             WHERE id IN (SELECT rowid FROM albums_fts WHERE albums_fts MATCH ?1)
+               AND jaccard_trigram(effective_album_artist_norm, ?3) >= 0.2
            UNION
            SELECT artist AS name FROM tracks
-             WHERE artist IS NOT NULL AND artist != '' AND {tr_where}
-         )"
-    );
-    let total: i64 = ctx
-        .conn
-        .query_row(&total_sql, rusqlite::params_from_iter(&params), |r| {
-            r.get(0)
-        })?;
+             WHERE artist IS NOT NULL AND artist != ''
+               AND id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?2)
+               AND jaccard_trigram(artist_norm, ?3) >= 0.2
+         )",
+        rusqlite::params![&aa_phrase, &tr_phrase, &norm],
+        |r| r.get(0),
+    )?;
+    artists_emit_rows(
+        ctx,
+        "id IN (SELECT rowid FROM albums_fts WHERE albums_fts MATCH ?1)
+             AND jaccard_trigram(effective_album_artist_norm, ?3) >= 0.2",
+        "id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?2)
+             AND jaccard_trigram(artist_norm, ?3) >= 0.2",
+        vec![
+            SqlValue::from(aa_phrase),
+            SqlValue::from(tr_phrase),
+            SqlValue::from(norm),
+        ],
+        Some("jaccard_trigram(effective_album_artist_norm, ?3)"),
+        fuzzy_total,
+        start,
+        count,
+    )
+}
 
+/// Emit the artist-search result page given pre-built WHERE fragments and
+/// their bound params. `score_expr_aa` is the per-row Jaccard expression
+/// used as ORDER BY tie-break for the fuzzy stage; `None` means "no
+/// score, sort by name only" (LIKE stage).
+#[allow(clippy::too_many_arguments)]
+fn artists_emit_rows(
+    ctx: &BrowseContext,
+    aa_where: &str,
+    tr_where: &str,
+    params: Vec<SqlValue>,
+    score_expr_aa: Option<&str>,
+    total: i64,
+    start: usize,
+    count: usize,
+) -> Result<SearchResult> {
+    let (score_aa, score_tr, order_score) = match score_expr_aa {
+        Some(_) => (
+            // tr branch's Jaccard column always reads `artist_norm` against
+            // the same normalized-query placeholder (?3 in our fuzzy params).
+            ", jaccard_trigram(effective_album_artist_norm, ?3) AS score",
+            ", jaccard_trigram(artist_norm, ?3) AS score",
+            "MAX(score) DESC, ",
+        ),
+        None => ("", "", ""),
+    };
     let lim_idx = params.len() + 1;
     let off_idx = params.len() + 2;
-    // #28 bucket-4 tie-break: also surface the per-row Jaccard score (when
-    // fuzzy is on) so a name with more trigram overlap to the query bubbles
-    // up. Non-fuzzy branch carries an empty score column slot so the SELECT
-    // arity matches the UNION peer.
-    let (score_aa, score_tr, order_score) = if fuzzy {
-        (
-            ", jaccard_trigram(effective_album_artist_norm, ?4) AS score",
-            ", jaccard_trigram(artist_norm, ?4) AS score",
-            "MAX(score) DESC, ",
-        )
-    } else {
-        ("", "", "")
-    };
     let sql = format!(
         "SELECT name, MAX(is_aa) AS is_aa
          FROM (
@@ -655,7 +699,7 @@ fn search_artists_value(
          ORDER BY {order_score}MIN(name_norm)
          LIMIT ?{lim_idx} OFFSET ?{off_idx}"
     );
-    let mut list_params = params.clone();
+    let mut list_params = params;
     list_params.push(SqlValue::from(count as i64));
     list_params.push(SqlValue::from(start as i64));
 
@@ -839,32 +883,34 @@ fn search_track_value(
 ) -> Result<SearchResult> {
     let norm = crate::normalize::for_search(value);
     let like_pat = format!("%{}%", norm);
-    let fuzzy = fuzzy_eligible(ctx, &norm);
 
-    // Placeholders:
-    //   ?1 = `%X%` LIKE value
-    //   ?2 = FTS5 trigram-OR query for tracks_fts (fuzzy only)
-    //   ?3 = normalized exact value (Jaccard threshold + tie-break, fuzzy only)
-    let (where_sql, params): (String, Vec<SqlValue>) = if fuzzy {
-        let phrase = fts5_col_trigram_query(column, &norm);
-        (
-            format!(
-                "t.{column} LIKE ?1
-                 OR (
-                     t.id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?2)
-                     AND jaccard_trigram(t.{column}, ?3) >= 0.2
-                 )"
-            ),
-            vec![
-                SqlValue::from(like_pat.clone()),
-                SqlValue::from(phrase),
-                SqlValue::from(norm.clone()),
-            ],
-        )
-    } else {
+    // Stage 1: LIKE substring on the targeted column.
+    let like_total: i64 = ctx.conn.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM tracks t JOIN albums a ON t.album_id = a.id
+             WHERE t.{column} LIKE ?1"
+        ),
+        rusqlite::params![&like_pat],
+        |r| r.get(0),
+    )?;
+
+    let (where_sql, params, order_case) = if like_total > 0 || !fuzzy_eligible(ctx, &norm) {
         (
             format!("t.{column} LIKE ?1"),
             vec![SqlValue::from(like_pat.clone())],
+            "t.title_norm".to_string(),
+        )
+    } else {
+        // Stage 2: fuzzy fallback. FTS5 trigram-OR + Jaccard ≥ 0.2 on the
+        // same column, ranked by Jaccard score.
+        let phrase = fts5_col_trigram_query(column, &norm);
+        (
+            format!(
+                "t.id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?1)
+                 AND jaccard_trigram(t.{column}, ?2) >= 0.2"
+            ),
+            vec![SqlValue::from(phrase), SqlValue::from(norm.clone())],
+            format!("jaccard_trigram(t.{column}, ?2) DESC, t.title_norm"),
         )
     };
 
@@ -878,19 +924,6 @@ fn search_track_value(
 
     let lim_idx = params.len() + 1;
     let off_idx = params.len() + 2;
-    // bucket 0 = LIKE hit, bucket 1 = trigram-only typo hit (only present
-    // when fuzzy is on; otherwise the CASE collapses to a single arm).
-    // Within bucket 1, sort by Jaccard score descending so the closest
-    // typo candidate appears first.
-    let order_case = if fuzzy {
-        format!(
-            "CASE WHEN t.{column} LIKE ?1 THEN 0 ELSE 1 END,
-                 jaccard_trigram(t.{column}, ?3) DESC,
-                 t.title_norm"
-        )
-    } else {
-        "t.title_norm".to_string()
-    };
 
     let sql = format!(
         "SELECT t.id, t.album_id, t.title, t.artist, t.genre, t.track_num, t.disc_num,
@@ -1008,45 +1041,57 @@ fn search_classical_facet(
         return Ok(empty());
     }
 
-    // #28: single-leaf Contains? Add a column-restricted FTS5 MATCH OR-branch
-    // against the same `{column}_norm` (gated by Jaccard ≥ 0.3 to suppress
-    // bucket-4 noise) and rank typo hits by Jaccard score. Compound
-    // predicates (AND/OR trees) stay on the walk()/LIKE path — out of scope
-    // per #28.
-    let (effective_where, effective_params, jaccard_order) = {
-        let mut sql = where_clause.sql.clone();
-        let mut params = where_clause.params.clone();
-        let mut order = String::new();
-        if let Some(value) = single_contains_value_for_classical(predicate) {
-            let norm = crate::normalize::for_search(value);
-            if fuzzy_eligible(ctx, &norm) {
-                let phrase_idx = params.len() + 1;
-                let norm_idx = params.len() + 2;
-                sql = format!(
-                    "({sql} OR (
-                         id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?{phrase_idx})
-                         AND jaccard_trigram({norm_col}, ?{norm_idx}) >= 0.2
-                     ))"
-                );
-                params.push(SqlValue::from(fts5_col_trigram_query(norm_col, &norm)));
-                params.push(SqlValue::from(norm.clone()));
-                order = format!("jaccard_trigram({norm_col}, ?{norm_idx}) DESC, ");
-            }
-        }
-        (sql, params, order)
-    };
-
-    let count_sql = format!(
-        "SELECT COUNT(*) FROM (SELECT DISTINCT {col} FROM tracks
-         WHERE {col} IS NOT NULL AND {col} != '' AND {where_})",
-        col = column,
-        where_ = effective_where,
-    );
-    let total: i64 = ctx.conn.query_row(
-        &count_sql,
-        rusqlite::params_from_iter(&effective_params),
+    // #28 fall-through: run the walk()-built LIKE WHERE first; only when its
+    // DISTINCT COUNT is 0 (and the query is single-leaf + ≥ 3 chars) do we
+    // swap the WHERE for an FTS5 trigram + Jaccard branch. Compound predicates
+    // never reach the fuzzy stage — they stay on the LIKE walk() path.
+    let like_total: i64 = ctx.conn.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM (SELECT DISTINCT {col} FROM tracks
+             WHERE {col} IS NOT NULL AND {col} != '' AND {where_})",
+            col = column,
+            where_ = where_clause.sql,
+        ),
+        rusqlite::params_from_iter(&where_clause.params),
         |r| r.get(0),
     )?;
+
+    let single_leaf_norm = single_contains_value_for_classical(predicate)
+        .map(crate::normalize::for_search)
+        .filter(|n| fuzzy_eligible(ctx, n));
+
+    let (effective_where, effective_params, jaccard_order, total) = match single_leaf_norm {
+        Some(norm) if like_total == 0 => {
+            let phrase = fts5_col_trigram_query(norm_col, &norm);
+            let fuzzy_where = format!(
+                "id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?1)
+                 AND jaccard_trigram({norm_col}, ?2) >= 0.2"
+            );
+            let fuzzy_params = vec![SqlValue::from(phrase), SqlValue::from(norm)];
+            let fuzzy_total: i64 = ctx.conn.query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM (SELECT DISTINCT {col} FROM tracks
+                 WHERE {col} IS NOT NULL AND {col} != '' AND {where_})",
+                    col = column,
+                    where_ = fuzzy_where,
+                ),
+                rusqlite::params_from_iter(&fuzzy_params),
+                |r| r.get(0),
+            )?;
+            (
+                fuzzy_where,
+                fuzzy_params,
+                format!("jaccard_trigram({norm_col}, ?2) DESC, "),
+                fuzzy_total,
+            )
+        }
+        _ => (
+            where_clause.sql,
+            where_clause.params,
+            String::new(),
+            like_total,
+        ),
+    };
 
     let mut list_params = effective_params.clone();
     list_params.push(SqlValue::from(count as i64));
@@ -1893,10 +1938,12 @@ mod tests {
     }
 
     #[test]
-    fn tz2_exact_still_ranks_first_when_trigram_also_hits() {
-        // Two albums: an exact title "Solid" and a misspelled match for "Soild".
-        // Querying "Solid" must surface the exact album in bucket 0, with the
-        // typo-candidate album (if any) appearing strictly below it.
+    fn tz2_like_hit_excludes_fuzzy_candidates() {
+        // #28 fall-through: when LIKE produces any hit, the fuzzy stage is
+        // not run at all. Here `"Solid"` matches the album `"Solid"` exactly,
+        // and `"Soild Rock"` (trigram-similar but no substring containment)
+        // never enters the result set even though its trigrams would clear
+        // the Jaccard threshold if fuzzy ran.
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         crate::db::schema::migrate(&conn).unwrap();
@@ -1972,12 +2019,10 @@ mod tests {
             r#"upnp:class derivedfrom "object.container.album" and dc:title contains "Solid""#,
         );
         let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
-        // Both rows hit (exact "Solid" via bucket 0, "Soild Rock" via bucket 2
-        // since the album_norm LIKE branch finds "solid" inside "soild rock"?
-        // Actually — "soild rock" doesn't contain "solid" as a substring, so
-        // it only reaches the row via trigram (bucket 4). The first slot must
-        // still be the exact album.
-        assert!(r.total_matches >= 1);
+        // Exactly one hit — the LIKE match. `"Soild Rock"` would clear the
+        // 0.2 Jaccard threshold in the fuzzy stage, but the fuzzy stage
+        // never runs because `like_total > 0`.
+        assert_eq!(r.total_matches, 1);
         assert_eq!(r.didl.containers[0].title, "Solid");
     }
 
@@ -2459,6 +2504,85 @@ mod tests {
         // and must be returned first.
         assert!(r.total_matches >= 1);
         assert_eq!(r.didl.containers[0].title, "Yesterday");
+    }
+
+    #[test]
+    fn tzd_track_class_like_hit_excludes_fuzzy() {
+        // Same fall-through invariant as tz2, but exercising the Track-class
+        // single-leaf path. A track titled "Yesterday" (LIKE hit on
+        // "Yesterday") coexists with "Yseterdyy Special" (fuzzy candidate
+        // only). The fuzzy stage must not run.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::schema::migrate(&conn).unwrap();
+        let aid = crate::db::albums::upsert(
+            &conn,
+            &crate::db::albums::AlbumKey {
+                effective_album_artist: "Various",
+                album: "Mix",
+                compilation: true,
+            },
+            None,
+            0,
+        )
+        .unwrap();
+        for (path, title) in [
+            ("/m/y.flac", "Yesterday"),
+            ("/m/y2.flac", "Yseterdyy Special"),
+        ] {
+            crate::db::tracks::upsert(
+                &conn,
+                &crate::db::tracks::TrackRow {
+                    album_id: aid,
+                    path,
+                    title: Some(title),
+                    artist: Some("Various"),
+                    genre: None,
+                    track_num: Some(1),
+                    disc_num: Some(1),
+                    duration_ms: Some(1),
+                    sample_rate: Some(44100),
+                    bit_depth: Some(16),
+                    channels: Some(2),
+                    bitrate: Some(1),
+                    codec: "flac",
+                    mime_type: "audio/flac",
+                    file_size: 1,
+                    added_at: 0,
+                    mtime: 0,
+                    composer: None,
+                    conductor: None,
+                    performer: None,
+                    year: None,
+                    rg_track_gain: None,
+                    rg_track_peak: None,
+                    rg_album_gain: None,
+                    rg_album_peak: None,
+                    artist_sort: None,
+                    album_artist_sort: None,
+                    album_sort: None,
+                    title_sort: None,
+                    composer_sort: None,
+                    original_year: None,
+                    mb_recording_id: None,
+                    mb_release_id: None,
+                    mb_release_group_id: None,
+                    mb_artist_id: None,
+                    mb_release_artist_id: None,
+                },
+            )
+            .unwrap();
+        }
+        crate::db::albums::recalc_counts(&conn).unwrap();
+
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.item.audioItem" and dc:title contains "Yesterday""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        // Only the LIKE-matching track surfaces. "Yseterdyy Special" would
+        // pass the Jaccard threshold but the fuzzy stage never runs.
+        assert_eq!(r.total_matches, 1);
+        assert_eq!(r.didl.items[0].title, "Yesterday");
     }
 
     // ── Pagination still works ────────────────────────────────────────────
