@@ -24,7 +24,7 @@ A simple UPnP/DLNA MediaServer for personal music libraries.
 - DIDL-Lite XML generation.
 - **Browse facets**: Album Artist / Artist / Album / Genre.
 - **Recently Added Albums** (based on `added_at`, preserved across rescans).
-- **Random Albums** (shuffled at startup, stable within the session).
+- **Random Albums** (shuffled at startup; daily re-roll by default via lazy Browse-time check).
 - **Supported formats**: FLAC / WAV / AIFF (lossless), ALAC / M4A (AAC) /
   MP3 (container + lossy).
 - High-resolution audio up to 24-bit / 192 kHz (FLAC / WAV / AIFF / ALAC).
@@ -910,13 +910,21 @@ Timing:
 - Reshuffled automatically after a scan that altered the album set
   (full reshuffle; new albums are not just appended, otherwise they would
   always end up at the bottom).
-- Optionally re-rolled lazily at Browse time when
+- Re-rolled lazily at Browse time when
   `browse.random_albums_shuffle_interval_hours` is set: the next Browse
   arriving after the configured interval has elapsed since the previous
   reshuffle triggers a fresh shuffle before serving. The check is gated on
   Browse, so idle hours cost nothing — no background timer is used. Default
-  is unset (none of this fires; the array stays fixed between the
-  event-driven triggers above).
+  is `Some(24)` — a daily re-roll, on the assumption that an always-on LAN
+  server rarely sees the startup / post-scan triggers. Set to `null` via
+  the admin UI to disable the lazy re-roll and freeze the array between the
+  event-driven triggers above.
+
+`browse.random_albums_limit` defaults to `Some(100)`. The typical
+expectation for `cat:random` is "a browsable page-sized random pick", not
+"shuffle the entire library", so the out-of-the-box cap is sized for the
+Browse-page hop. Set to `null` via the admin UI to uncap and surface every
+album in the shuffled order.
 
 ### 6.7 Recently Added
 

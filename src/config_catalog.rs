@@ -473,10 +473,11 @@ random_albums_limit  = 100
     }
 
     #[test]
-    fn cc13_build_browse_settings_treats_missing_limit_as_none() {
+    fn cc13_build_browse_settings_uses_serde_defaults_when_keys_missing() {
         // sample_config sets explicit limits; verify the unset path by stripping
-        // them out. With both keys absent from toml the build snapshot should
-        // surface None (= no cap), matching the new out-of-the-box default.
+        // them out. With every key absent from toml the build snapshot should
+        // surface the Config struct's serde defaults: recently_added_limit stays
+        // uncapped, random_albums_limit pulls in the Some(100) default.
         let cfg: Config = toml::from_str(
             r#"
 [server]
@@ -499,7 +500,7 @@ parallel = 1
         let defaults = precompute_defaults(&cfg);
         let s = build_browse_settings(&defaults, &conn).unwrap();
         assert_eq!(s.recently_added_limit, None);
-        assert_eq!(s.random_albums_limit, None);
+        assert_eq!(s.random_albums_limit, Some(100));
     }
 
     #[test]

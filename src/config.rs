@@ -92,15 +92,18 @@ pub struct Browse {
     /// cap (show everything by recency). SPEC §6.7.
     #[serde(default)]
     pub recently_added_max_age_days: Option<u32>,
-    /// Cap the shuffled `cat:random` array. `None` (the default) means no cap —
-    /// the full album population is shuffled and surfaced.
-    #[serde(default)]
+    /// Cap the shuffled `cat:random` array. Defaults to `Some(100)` — a
+    /// browsable page-sized random selection is the typical use of `cat:random`
+    /// (vs "shuffle the entire library"). Set to `null` via the admin UI to
+    /// uncap and surface every album.
+    #[serde(default = "default_random_albums_limit")]
     pub random_albums_limit: Option<usize>,
     /// Re-roll `cat:random` lazily once this many hours have elapsed since the
     /// last reshuffle. The check fires at Browse time, so idle hours cost
-    /// nothing. `None` (the default) keeps the legacy event-driven behavior:
-    /// reshuffle only on startup / post-scan / `POST /admin/reshuffle`.
-    #[serde(default)]
+    /// nothing. Defaults to `Some(24)` — a daily re-roll, since the always-on
+    /// LAN-server case rarely restarts. Set to `null` via the admin UI to
+    /// freeze the order between startup / post-scan / `POST /admin/reshuffle`.
+    #[serde(default = "default_random_albums_shuffle_interval_hours")]
     pub random_albums_shuffle_interval_hours: Option<u32>,
 
     /// Selection and order of top-level facets surfaced at ObjectID "0"
@@ -122,6 +125,14 @@ pub struct Browse {
 
 fn default_quality_in_title_format() -> String {
     "[{q}]".to_string()
+}
+
+fn default_random_albums_limit() -> Option<usize> {
+    Some(100)
+}
+
+fn default_random_albums_shuffle_interval_hours() -> Option<u32> {
+    Some(24)
 }
 
 /// Default top-level facet order (SPEC §6.2). Kept in sync with the
@@ -191,11 +202,13 @@ mod tests {
         assert!(cfg.scan.on_startup);
         assert_eq!(cfg.scan.parallel, 8);
 
-        // After defaulting to None, the example file omits both limit keys so
-        // out-of-the-box behavior is "show everything"; admin UI is the only
-        // place to dial them down.
+        // The example file omits the browse limit keys so out-of-the-box
+        // behavior is whatever the serde defaults say: `recently_added_limit`
+        // stays uncapped, `random_albums_limit` defaults to 100, and the
+        // shuffle interval defaults to 24h.
         assert_eq!(cfg.browse.recently_added_limit, None);
-        assert_eq!(cfg.browse.random_albums_limit, None);
+        assert_eq!(cfg.browse.random_albums_limit, Some(100));
+        assert_eq!(cfg.browse.random_albums_shuffle_interval_hours, Some(24));
         assert!(!cfg.browse.quality_in_title);
     }
 
@@ -320,9 +333,10 @@ random_albums_limit = 20
     }
 
     #[test]
-    fn c7_browse_limits_default_to_none_when_omitted() {
-        // Omitting both keys yields None (= unlimited). Admin UI is the only
-        // place to set a positive cap once the server is running.
+    fn c7_browse_limits_apply_serde_defaults_when_omitted() {
+        // Empty [browse] = serde defaults. `recently_added_limit` is still
+        // uncapped by default; `random_albums_limit` and the shuffle interval
+        // are nudged to sensible "out of the box just works" values.
         let text = r#"
 [server]
 friendly_name = "Test"
@@ -340,6 +354,7 @@ parallel = 1
 "#;
         let cfg: Config = toml::from_str(text).expect("must parse with [browse] empty");
         assert_eq!(cfg.browse.recently_added_limit, None);
-        assert_eq!(cfg.browse.random_albums_limit, None);
+        assert_eq!(cfg.browse.random_albums_limit, Some(100));
+        assert_eq!(cfg.browse.random_albums_shuffle_interval_hours, Some(24));
     }
 }

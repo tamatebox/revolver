@@ -11,7 +11,7 @@ Single binary, SQLite-backed, LAN-only.
   - Album Artist / Artist / Album / Genre
   - Recently Added (flat album list, optionally capped by count + age in days)
   - Recently Played (counted by stream hits)
-  - Random Albums (reshuffled on startup, after each scan, or on demand; limit changes auto-reshuffle; optional time-based auto re-roll at Browse, off by default)
+  - Random Albums (reshuffled on startup, after each scan, or on demand; limit changes auto-reshuffle; lazy time-based auto re-roll at Browse — defaults to once every 24h, capped to 100 albums by default)
   - Hi-Res / Lossy / Mixed Quality
   - Composer / Conductor / Performer — classical-music facets, surfaced only when the library has matching tags
   - Year / Decade — release-year facets, surfaced only when any track carries a year tag
@@ -81,7 +81,7 @@ See [`config.toml.example`](config.toml.example) for the full schema.
 
 ### Runtime browse settings
 
-Browse-side tuning (Recently Added count + age caps, Random Albums cap, top-level facet selection / order) lives in the admin UI (`/` → Settings) rather than `config.toml`. All keys default to "no cap / full canonical list", so a fresh install needs zero toml plumbing — open the Settings panel only when you want to dial something down.
+Browse-side tuning (Recently Added count + age caps, Random Albums cap + re-roll interval, top-level facet selection / order) lives in the admin UI (`/` → Settings) rather than `config.toml`. Defaults aim at "just works out of the box": Recently Added is uncapped, Random Albums is capped at 100 with a daily lazy re-roll, the full canonical facet list is on. Open the Settings panel only when you want to dial something.
 
 Same edits via the REST API:
 
