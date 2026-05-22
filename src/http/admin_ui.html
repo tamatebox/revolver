@@ -7,30 +7,92 @@
   <title>revolver admin</title>
   <style>
     :root {
-      --bg: #fafafa;
-      --card: #fff;
-      --border: #ddd;
-      --muted: #777;
+      --bg: #f6f7f9;
+      --card: #ffffff;
+      --border: #e5e7eb;
+      --border-strong: #d1d5db;
+      --muted: #6b7280;
+      --text: #1f2937;
+      --text-strong: #0f172a;
       --accent: #2563eb;
+      --accent-hover: #1d4ed8;
+      --accent-soft: #eff6ff;
       --danger: #b91c1c;
-      --code-bg: #f4f4f4;
+      --warning: #f59e0b;
+      --code-bg: #f3f4f6;
+      --pill-warning-bg: #fef3c7;
+      --pill-warning-fg: #92400e;
+      --pill-danger-bg: #fee2e2;
+      --pill-danger-fg: #991b1b;
+      --hidden-bg: rgba(15, 23, 42, 0.025);
+      --row-hover: #f9fafb;
+      --toggle-off: #cbd5e1;
+      --focus-ring: rgba(37, 99, 235, 0.22);
+      --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 1px rgba(15, 23, 42, 0.03);
+      --radius: 10px;
+      --radius-sm: 6px;
+      color-scheme: light;
     }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b1220;
+        --card: #131c2e;
+        --border: #1f2a3f;
+        --border-strong: #334155;
+        --muted: #94a3b8;
+        --text: #e5e7eb;
+        --text-strong: #f9fafb;
+        --accent: #60a5fa;
+        --accent-hover: #93c5fd;
+        --accent-soft: rgba(96, 165, 250, 0.15);
+        --danger: #f87171;
+        --warning: #fbbf24;
+        --code-bg: #0b1220;
+        --pill-warning-bg: rgba(251, 191, 36, 0.18);
+        --pill-warning-fg: #fcd34d;
+        --pill-danger-bg: rgba(248, 113, 113, 0.18);
+        --pill-danger-fg: #fca5a5;
+        --hidden-bg: rgba(255, 255, 255, 0.03);
+        --row-hover: rgba(255, 255, 255, 0.04);
+        --toggle-off: #475569;
+        --focus-ring: rgba(96, 165, 250, 0.35);
+        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 1px rgba(0, 0, 0, 0.2);
+        color-scheme: dark;
+      }
+    }
+    *, *::before, *::after { box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-      max-width: 820px;
+      max-width: 880px;
       margin: 2em auto;
-      padding: 0 1em;
+      padding: 0 1.25em;
       background: var(--bg);
-      color: #222;
+      color: var(--text);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
     }
-    h1 { margin: 0 0 1em; font-size: 1.6em; }
-    h2 { margin: 0 0 0.6em; font-size: 1.1em; color: var(--muted); }
+    h1 {
+      margin: 0 0 1em;
+      font-size: 1.6em;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--text-strong);
+    }
+    /* Card title: bold, normal-size, dark. The card's identity. */
+    h2 {
+      margin: 0 0 0.9em;
+      font-size: 1em;
+      color: var(--text-strong);
+      font-weight: 600;
+      letter-spacing: -0.005em;
+    }
     .card {
       background: var(--card);
       border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 1em 1.25em;
+      border-radius: var(--radius);
+      padding: 1.25em 1.5em;
       margin-bottom: 1em;
+      box-shadow: var(--shadow-sm);
     }
     .grid {
       display: grid;
@@ -40,114 +102,208 @@
     }
     .grid > div:nth-child(odd) { color: var(--muted); }
     button {
-      padding: 0.5em 1em;
+      padding: 0.5em 1.1em;
       margin-right: 0.5em;
       cursor: pointer;
       border: 1px solid var(--accent);
-      background: white;
+      background: transparent;
       color: var(--accent);
-      border-radius: 4px;
+      border-radius: var(--radius-sm);
+      font: inherit;
       font-size: 0.95em;
+      font-weight: 500;
+      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
     }
     button:hover:not(:disabled) { background: var(--accent); color: white; }
+    button:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px var(--focus-ring);
+    }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* Primary action: rescan + save changes. */
+    .btn-primary {
+      background: var(--accent);
+      color: white;
+    }
+    .btn-primary:hover:not(:disabled) {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+      color: white;
+    }
     pre {
       background: var(--code-bg);
       padding: 1em;
-      border-radius: 4px;
+      border-radius: var(--radius-sm);
       overflow: auto;
       max-height: 400px;
       font-size: 0.85em;
       margin-top: 0.75em;
+      color: var(--text);
     }
     .status { color: var(--muted); font-size: 0.85em; margin-left: 0.5em; }
     .status.error { color: var(--danger); }
 
     /* Settings form */
-    .settings-section { margin-bottom: 1em; }
+    .settings-section { margin-bottom: 1.5em; }
+    .settings-section:last-child { margin-bottom: 0.5em; }
+    /* Sub-section heading within a card: small caps, muted. */
     .settings-section h3 {
       margin: 0.5em 0 0.4em;
-      font-size: 0.95em;
+      font-size: 0.72em;
       color: var(--muted);
       text-transform: uppercase;
-      letter-spacing: 0.05em;
+      letter-spacing: 0.12em;
+      font-weight: 600;
     }
+    /* Row: relative-positioned so the modified-state bar (::before) can sit
+       at the left edge instead of the tiny dot the old design used. */
     .settings-row {
       display: grid;
-      grid-template-columns: 18em 1fr auto;
-      gap: 0.4em 1em;
+      grid-template-columns: minmax(11em, 16em) minmax(0, 1fr) auto;
+      gap: 0.35em 1em;
       align-items: center;
-      padding: 0.5em 0;
-      border-bottom: 1px dashed var(--border);
+      padding: 0.7em 0.5em 0.7em 0.75em;
+      border-bottom: 1px solid var(--border);
+      position: relative;
     }
+    .settings-row::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0.65em;
+      bottom: 0.65em;
+      width: 3px;
+      border-radius: 2px;
+      background: transparent;
+      transition: background 0.15s ease;
+    }
+    .settings-row.user-source::before { background: var(--accent); }
+    .settings-row.dirty::before { background: var(--warning); }
     .settings-row:last-child { border-bottom: none; }
     .settings-row.row-array { align-items: start; }
     .settings-row.row-array .settings-key { padding-top: 0.3em; }
     .settings-key {
       display: flex;
       align-items: center;
-      gap: 0.35em;
+      gap: 0.4em;
       font-weight: 500;
+      color: var(--text-strong);
     }
-    .modified-dot {
-      display: inline-block;
-      width: 0.5em;
-      height: 0.5em;
-      border-radius: 50%;
-      background: #f59e0b;
-      visibility: hidden;
-      flex-shrink: 0;
-    }
-    .settings-row.dirty .modified-dot,
-    .settings-row.user-source .modified-dot { visibility: visible; }
-    .settings-row.user-source .modified-dot { background: var(--accent); }
-    .settings-row.dirty .modified-dot { background: #f59e0b; }
+    /* The bar (::before on .settings-row) replaces this dot. The JS still
+       emits the element for now; keeping it hidden avoids touching the
+       render path. */
+    .modified-dot { display: none; }
     .settings-input {
       width: 100%;
-      padding: 0.3em 0.5em;
-      border: 1px solid var(--border);
-      border-radius: 3px;
+      padding: 0.4em 0.6em;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
       font: inherit;
+      background: var(--card);
+      color: var(--text);
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
     }
-    .settings-input[type="checkbox"] { width: auto; }
+    .settings-input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--focus-ring);
+    }
+    /* Boolean settings render as a toggle switch, right-aligned within the
+       input column so it sits visually close to the reset button (iOS-style). */
+    .settings-input[type="checkbox"] {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 2.4em;
+      height: 1.35em;
+      background: var(--toggle-off);
+      border: none;
+      border-radius: 999px;
+      padding: 0;
+      margin: 0;
+      position: relative;
+      cursor: pointer;
+      flex-shrink: 0;
+      justify-self: end;
+      transition: background 0.15s ease;
+    }
+    .settings-input[type="checkbox"]::before {
+      content: "";
+      position: absolute;
+      top: 0.15em;
+      left: 0.15em;
+      width: 1.05em;
+      height: 1.05em;
+      background: white;
+      border-radius: 50%;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+      transition: transform 0.15s ease;
+    }
+    .settings-input[type="checkbox"]:checked { background: var(--accent); }
+    .settings-input[type="checkbox"]:checked::before { transform: translateX(1.05em); }
+    .settings-input[type="checkbox"]:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px var(--focus-ring);
+    }
     .reset-link {
       background: none;
       border: none;
       color: var(--muted);
-      padding: 0.2em 0.4em;
+      padding: 0.25em 0.5em;
       margin: 0;
       cursor: pointer;
+      font: inherit;
       font-size: 0.85em;
+      border-radius: var(--radius-sm);
+      transition: color 0.15s ease, background 0.15s ease;
     }
     .reset-link:hover:not(:disabled) {
-      background: none;
+      background: var(--accent-soft);
       color: var(--accent);
     }
-    .reset-link:disabled { opacity: 0.3; }
+    .reset-link:disabled { opacity: 0.3; cursor: not-allowed; }
+    /* Hint aligns under the input column, not under the label. */
     .settings-hint {
-      grid-column: 1 / -1;
-      font-size: 0.8em;
+      grid-column: 2 / -1;
+      font-size: 0.82em;
       color: var(--muted);
-      margin-left: 0.2em;
+      line-height: 1.45;
     }
-    .settings-hint .tier-note {
-      color: #b45309;
-      margin-left: 0.4em;
+    /* tier-note rendered as a pill badge with severity color so reload /
+       restart consequences are visible at a glance. */
+    .tier-note {
+      display: inline-block;
+      padding: 0.1em 0.6em;
+      margin-left: 0.5em;
+      border-radius: 999px;
+      font-size: 0.88em;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      vertical-align: 1px;
+    }
+    .tier-note.tier-reload {
+      background: var(--pill-warning-bg);
+      color: var(--pill-warning-fg);
+    }
+    .tier-note.tier-restart {
+      background: var(--pill-danger-bg);
+      color: var(--pill-danger-fg);
     }
 
     /* Array-valued control (browse.top_level) */
     .array-control {
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 0.3em 0.5em;
-      background: #fff;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      padding: 0.4em 0.5em;
+      background: var(--card);
+      overflow: hidden;
     }
     .array-group-label {
-      font-size: 0.75em;
+      font-size: 0.7em;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
+      letter-spacing: 0.12em;
       color: var(--muted);
-      margin: 0.3em 0 0.2em;
+      margin: 0.3em 0 0.25em;
+      font-weight: 600;
     }
     .array-list {
       display: flex;
@@ -158,12 +314,17 @@
       grid-template-columns: auto auto 1fr;
       align-items: center;
       gap: 0.4em;
-      padding: 0.2em 0.2em;
+      padding: 0.3em 0.35em;
       font-size: 0.9em;
       border: 1px solid transparent;
-      border-radius: 3px;
+      border-radius: 4px;
+    }
+    .array-item input[type="checkbox"] {
+      accent-color: var(--accent);
+      cursor: pointer;
     }
     .array-item.draggable { cursor: grab; }
+    .array-item.draggable:hover { background: var(--row-hover); }
     .array-item.draggable:active { cursor: grabbing; }
     .array-item.dragging { opacity: 0.4; }
     .array-item.drop-before { border-top-color: var(--accent); }
@@ -172,22 +333,62 @@
       color: var(--danger);
       font-style: italic;
     }
+    /* Hidden categories live in a subtly-tinted sub-area to differentiate
+       them from the active set without adding cognitive noise. */
+    .array-section-hidden {
+      background: var(--hidden-bg);
+      margin: 0.5em -0.5em -0.4em;
+      padding: 0.4em 0.5em 0.5em;
+      border-top: 1px solid var(--border);
+    }
+    .array-section-hidden .array-item-label {
+      color: var(--muted);
+    }
     .drag-handle {
       color: var(--muted);
       font-size: 1em;
       line-height: 1;
       user-select: none;
     }
-    .array-divider {
-      border: none;
-      border-top: 1px dashed var(--border);
-      margin: 0.3em 0;
-    }
     .array-empty {
       font-size: 0.8em;
       color: var(--muted);
       font-style: italic;
       padding: 0.2em 0;
+    }
+
+    /* Narrow viewports: stack each settings row vertically so the fixed
+       label column doesn't overflow on phones. */
+    @media (max-width: 640px) {
+      body {
+        margin: 1em auto;
+        padding: 0 0.75em;
+      }
+      h1 { font-size: 1.35em; }
+      .card {
+        padding: 1em;
+        border-radius: 8px;
+      }
+      .settings-row {
+        grid-template-columns: 1fr auto;
+        grid-template-areas:
+          "key reset"
+          "ctrl ctrl"
+          "hint hint";
+        gap: 0.4em 0.5em;
+        padding: 0.8em 0.5em 0.8em 0.75em;
+      }
+      .settings-row > .settings-key { grid-area: key; }
+      .settings-row > .reset-link { grid-area: reset; align-self: start; }
+      .settings-row > .settings-input,
+      .settings-row > .array-control { grid-area: ctrl; }
+      .settings-row > .settings-hint { grid-area: hint; }
+      .settings-row.row-array .settings-key { padding-top: 0; }
+      .settings-input[type="checkbox"] { justify-self: start; }
+      button {
+        margin-right: 0.3em;
+        margin-bottom: 0.4em;
+      }
     }
   </style>
 </head>
@@ -222,13 +423,13 @@
   <div class="card">
     <h2>Settings</h2>
     <div id="settings-form">loading…</div>
-    <button id="btn-save-settings" disabled>Save changes</button>
+    <button id="btn-save-settings" class="btn-primary" disabled>Save changes</button>
     <span class="status" id="settings-status"></span>
   </div>
 
   <div class="card">
     <h2>Actions</h2>
-    <button id="btn-rescan">Rescan library</button>
+    <button id="btn-rescan" class="btn-primary">Rescan library</button>
     <button id="btn-reshuffle">Reshuffle random albums</button>
     <button id="btn-show-report">Show last scan report</button>
     <span class="status" id="action-status"></span>
@@ -538,7 +739,7 @@
 
         const enabledLabel = document.createElement("div");
         enabledLabel.className = "array-group-label";
-        enabledLabel.textContent = "Visible (drag to reorder)";
+        enabledLabel.textContent = "Visible — drag to reorder, uncheck to hide";
         wrap.appendChild(enabledLabel);
 
         const enabledList = document.createElement("div");
@@ -626,14 +827,16 @@
 
         const disabled = entry.choices.filter((c) => !enabledSet.has(c.id));
         if (disabled.length > 0) {
-          const divider = document.createElement("hr");
-          divider.className = "array-divider";
-          wrap.appendChild(divider);
+          // Hidden section gets its own visually-distinct sub-area inside
+          // the array-control box. The CSS gives it a subtle tint + a
+          // top border so the divide is clear without a literal <hr>.
+          const hiddenWrap = document.createElement("div");
+          hiddenWrap.className = "array-section-hidden";
 
           const disabledLabel = document.createElement("div");
           disabledLabel.className = "array-group-label";
-          disabledLabel.textContent = "Hidden";
-          wrap.appendChild(disabledLabel);
+          disabledLabel.textContent = "Hidden (check to show)";
+          hiddenWrap.appendChild(disabledLabel);
 
           const disabledList = document.createElement("div");
           disabledList.className = "array-list";
@@ -661,7 +864,8 @@
 
             disabledList.appendChild(item);
           });
-          wrap.appendChild(disabledList);
+          hiddenWrap.appendChild(disabledList);
+          wrap.appendChild(hiddenWrap);
         }
       }
 
@@ -738,7 +942,8 @@
             if (e.description) hintDiv.appendChild(document.createTextNode(e.description));
             if (tier) {
               const note = document.createElement("span");
-              note.className = "tier-note";
+              // tier-${value} picks the severity color (reload=warning, restart=danger).
+              note.className = `tier-note tier-${e.restart_required}`;
               note.textContent = tier;
               hintDiv.appendChild(note);
             }

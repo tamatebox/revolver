@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"/>
+<title>cat:* icons — Pair 1 (recent ↔ played) proposals</title>
+<style>
+  :root {
+    --bg: #1a1a1a;
+    --bg-tile: rgba(255,255,255,0.04);
+    --fg: #ede4d0;
+    --fg-mute: rgba(237,228,208,0.55);
+  }
+  body { margin: 0; padding: 40px; background: var(--bg); color: var(--fg); font-family: -apple-system, "Helvetica Neue", sans-serif; }
+  h1 { margin: 0 0 8px; font-size: 22px; font-weight: 700; }
+  .sub { margin: 0 0 32px; font-size: 13px; color: var(--fg-mute); line-height: 1.5; }
+  h2 { margin: 40px 0 14px; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.10em; color: var(--fg-mute); }
+  .section { background: var(--bg-tile); padding: 20px 24px; border-radius: 10px; margin-bottom: 4px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, 132px); gap: 16px; }
+  .tile { display: flex; flex-direction: column; align-items: center; }
+  .tile object, .tile img { width: 120px; height: 120px; display: block; }
+  .tile .label { margin-top: 8px; font-size: 11.5px; color: var(--fg-mute); text-align: center; max-width: 130px; line-height: 1.35; }
+  .pair { display: inline-flex; gap: 12px; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 8px; margin-right: 12px; margin-bottom: 12px; vertical-align: top; }
+  .pair .tile object { width: 96px; height: 96px; }
+  .pair .label { font-size: 11px; }
+  .note { font-size: 12px; color: var(--fg-mute); margin: 8px 0 0; line-height: 1.5; }
+</style>
+</head>
+<body>
+<h1>Pair 1 提案比較 (cat:recent ↔ cat:played)</h1>
+<p class="sub">履歴弧中心案: 両アイコンとも反時計回りの円弧 (↺、UI 慣習で "History / Undo / 最近") をホストにし、中央の動詞記号で Added / Played を担う。オレンジは弧の矢じり先端 = 「履歴の最近端」を指す。yr/dec ペアと同じ "同一ホスト + 内容差し替え" 原則。</p>
+
+<h2>現状 (既存)</h2>
+<div class="section">
+  <div class="grid">
+    <div class="tile"><object data="../cat-recent.svg" type="image/svg+xml"></object><div class="label">cat-recent (現状: 時計)</div></div>
+    <div class="tile"><object data="../cat-played.svg" type="image/svg+xml"></object><div class="label">cat-played (現状: 三角 + 弧バッジ)</div></div>
+  </div>
+</div>
+
+<h2>新案 (個別)</h2>
+<div class="section">
+  <div class="grid">
+    <div class="tile"><object data="cat-recent-history-plus.svg" type="image/svg+xml"></object><div class="label">recent: 履歴弧 + "+"</div></div>
+    <div class="tile"><object data="cat-played-history-play.svg" type="image/svg+xml"></object><div class="label">played: 履歴弧 + "▶"</div></div>
+  </div>
+</div>
+
+<h2>ペアとして並べた時の見え方</h2>
+<div class="section">
+  <div class="pair">
+    <div class="tile"><object data="cat-recent-history-plus.svg" type="image/svg+xml"></object><div class="label">recent (+)</div></div>
+    <div class="tile"><object data="cat-played-history-play.svg" type="image/svg+xml"></object><div class="label">played (▶)</div></div>
+  </div>
+  <p class="note">ホスト (反時計弧 + オレンジ矢じり) が完全一致 → 「Recently 系の 2 個」と一目で読めるか確認</p>
+</div>
+
+<h2>他既存アイコンとの整合性 (Linn グリッド想定)</h2>
+<div class="section">
+  <div class="grid">
+    <div class="tile"><object data="cat-recent-history-plus.svg" type="image/svg+xml"></object><div class="label">recent (新)</div></div>
+    <div class="tile"><object data="cat-played-history-play.svg" type="image/svg+xml"></object><div class="label">played (新)</div></div>
+    <div class="tile"><object data="../cat-al.svg" type="image/svg+xml"></object><div class="label">al</div></div>
+    <div class="tile"><object data="../cat-aa.svg" type="image/svg+xml"></object><div class="label">aa</div></div>
+    <div class="tile"><object data="../cat-ar.svg" type="image/svg+xml"></object><div class="label">ar</div></div>
+    <div class="tile"><object data="../cat-random.svg" type="image/svg+xml"></object><div class="label">random</div></div>
+    <div class="tile"><object data="../cat-gn.svg" type="image/svg+xml"></object><div class="label">gn</div></div>
+    <div class="tile"><object data="../cat-yr.svg" type="image/svg+xml"></object><div class="label">yr</div></div>
+    <div class="tile"><object data="../cat-dec.svg" type="image/svg+xml"></object><div class="label">dec</div></div>
+    <div class="tile"><object data="../cat-hires.svg" type="image/svg+xml"></object><div class="label">hires</div></div>
+    <div class="tile"><object data="../cat-mixed.svg" type="image/svg+xml"></object><div class="label">mixed</div></div>
+    <div class="tile"><object data="../cat-lossy.svg" type="image/svg+xml"></object><div class="label">lossy</div></div>
+    <div class="tile"><object data="../cat-pf.svg" type="image/svg+xml"></object><div class="label">pf</div></div>
+    <div class="tile"><object data="../cat-cm.svg" type="image/svg+xml"></object><div class="label">cm</div></div>
+    <div class="tile"><object data="../cat-cn.svg" type="image/svg+xml"></object><div class="label">cn</div></div>
+  </div>
+</div>
+
+</body>
+</html>
