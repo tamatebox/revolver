@@ -890,6 +890,7 @@ Track items use `object.item.audioItem.musicTrack`.
 ```rust
 struct RandomState {
     album_ids: Mutex<Vec<i64>>,
+    last_shuffled_at: Mutex<Option<Instant>>,
 }
 
 impl RandomState {
@@ -897,6 +898,7 @@ impl RandomState {
         let mut ids: Vec<i64> = conn.query("SELECT id FROM albums")...;
         ids.shuffle(&mut thread_rng());
         *self.album_ids.lock().unwrap() = ids;
+        *self.last_shuffled_at.lock().unwrap() = Some(Instant::now());
     }
 }
 ```
@@ -908,6 +910,13 @@ Timing:
 - Reshuffled automatically after a scan that altered the album set
   (full reshuffle; new albums are not just appended, otherwise they would
   always end up at the bottom).
+- Optionally re-rolled lazily at Browse time when
+  `browse.random_albums_shuffle_interval_hours` is set: the next Browse
+  arriving after the configured interval has elapsed since the previous
+  reshuffle triggers a fresh shuffle before serving. The check is gated on
+  Browse, so idle hours cost nothing — no background timer is used. Default
+  is unset (none of this fires; the array stays fixed between the
+  event-driven triggers above).
 
 ### 6.7 Recently Added
 

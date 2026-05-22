@@ -27,7 +27,11 @@ src/
 │                            art_cache / random_state / scan_progress / started_at /
 │                            ssdp_listener_active / ssdp_advertiser_active /
 │                            browse: RwLock<BrowseSettings> (#13) / config_defaults
-├── random.rs             `Mutex<Vec<i64>>`-backed Random Albums state (SPEC §6.6)
+├── random.rs             `Mutex<Vec<i64>>`-backed Random Albums state (SPEC §6.6).
+│                            Tracks `last_shuffled_at: Mutex<Option<Instant>>` so
+│                            `maybe_reshuffle` can lazily re-roll at Browse time
+│                            when `browse.random_albums_shuffle_interval_hours`
+│                            is set.
 ├── normalize.rs          NFKD + combining-marks strip + lowercase + katakana→hiragana
 │                            (#6). One function (`for_search`) used by both the
 │                            shadow-column populator (upsert / migrate) and the

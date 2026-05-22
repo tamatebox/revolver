@@ -11,7 +11,7 @@ Single binary, SQLite-backed, LAN-only.
   - Album Artist / Artist / Album / Genre
   - Recently Added (flat album list, optionally capped by count + age in days)
   - Recently Played (counted by stream hits)
-  - Random Albums (reshuffled on startup, after each scan, or on demand; limit changes auto-reshuffle)
+  - Random Albums (reshuffled on startup, after each scan, or on demand; limit changes auto-reshuffle; optional time-based auto re-roll at Browse, off by default)
   - Hi-Res / Lossy / Mixed Quality
   - Composer / Conductor / Performer — classical-music facets, surfaced only when the library has matching tags
   - Year / Decade — release-year facets, surfaced only when any track carries a year tag
