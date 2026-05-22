@@ -333,11 +333,11 @@
       color: var(--danger);
       font-style: italic;
     }
-    /* Up / down buttons — primary reorder UI on touch devices (where HTML5
-       drag-and-drop doesn't fire). Always visible so the affordance is
-       discoverable and keyboard-accessible too. */
+    /* Up / down buttons — only shown on touch devices (where HTML5
+       drag-and-drop doesn't fire). On desktop the drag-handle is the
+       sole reorder affordance. */
     .move-btns {
-      display: flex;
+      display: none;
       gap: 0.15em;
     }
     .move-btn {
@@ -419,6 +419,7 @@
       /* Drag handle does nothing on touch — hide it and rely on ↑/↓ buttons. */
       .drag-handle { display: none; }
       .array-item.draggable { cursor: default; }
+      .move-btns { display: flex; }
       .move-btn {
         padding: 0.35em 0.7em;
         font-size: 0.9em;
@@ -794,7 +795,7 @@
 
         const enabledLabel = document.createElement("div");
         enabledLabel.className = "array-group-label";
-        enabledLabel.textContent = "Visible — drag or use ↑↓ to reorder, uncheck to hide";
+        enabledLabel.textContent = "Visible — uncheck to hide";
         wrap.appendChild(enabledLabel);
 
         const enabledList = document.createElement("div");
