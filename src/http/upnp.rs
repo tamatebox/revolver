@@ -64,6 +64,17 @@ pub async fn icon_512() -> Response {
         .into_response()
 }
 
+/// `GET /icon.svg` — vector icon used as the admin UI favicon. Not part of
+/// the UPnP `<iconList>` (control points stick to the PNG sizes).
+pub async fn icon_svg() -> Response {
+    (
+        StatusCode::OK,
+        [("content-type", icon::SVG_MIME)],
+        icon::ICON_SVG,
+    )
+        .into_response()
+}
+
 /// `GET /icon/cat/{slug}` — per-category icon for root facets (#24).
 /// Returns the embedded PNG bytes with `Content-Type: image/png`, or 404 for
 /// unknown slugs. The URL deliberately omits the `.png` extension because

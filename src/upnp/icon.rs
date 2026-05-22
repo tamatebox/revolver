@@ -8,6 +8,11 @@ pub const ICON_48_PNG: &[u8] = include_bytes!("../../assets/icon-48.png");
 pub const ICON_120_PNG: &[u8] = include_bytes!("../../assets/icon-120.png");
 pub const ICON_512_PNG: &[u8] = include_bytes!("../../assets/icon-512.png");
 
+/// Source SVG used as the admin UI favicon (`/icon.svg`). Not referenced by
+/// `<iconList>` — UPnP control points stick to the PNG sizes.
+pub const ICON_SVG: &[u8] = include_bytes!("../../assets/icon.svg");
+pub const SVG_MIME: &str = "image/svg+xml";
+
 /// Per-category icons (#24). Each entry is the `{slug}` half of the
 /// `/icon/cat-{slug}.png` URL paired with the embedded PNG bytes. Source SVGs
 /// live next to the PNGs (`assets/category-icons/`) and are rasterized at
