@@ -548,9 +548,9 @@ actually send. The parser produces a tagged predicate tree; the dispatcher
 routes queries by the `upnp:class derivedfrom` filter and runs a `LIKE
 '%X%'` search against NFKD-folded shadow columns (`*_norm`, #6).
 
-**Fuzzy matching (#6).** Each searchable field is mirrored in a `*_norm`
-shadow column populated at upsert / migration time via
-`normalize::for_search`. The pipeline applies:
+**Normalization-based fuzzy matching (#6).** Each searchable field is
+mirrored in a `*_norm` shadow column populated at upsert / migration time
+via `normalize::for_search`. The pipeline applies:
 
 1. NFKD decomposition (decomposes accents and folds fullwidth Latin /
    halfwidth katakana to their canonical forms).
@@ -561,8 +561,52 @@ shadow column populated at upsert / migration time via
 The search input runs through the same function, so `LIKE '%norm(input)%'`
 against `column_norm` matches regardless of which side the variation is on.
 
+**Typo tolerance via FTS5 trigram + Jaccard (#28).** Layered on top of the
+normalization pipeline for the four single-leaf `contains` shapes (Linn's
+Album / Artist / Track / Composer-Conductor-Performer fields). Two
+SQLite FTS5 virtual tables (`albums_fts`, `tracks_fts`) shadow the
+`*_norm` columns with `tokenize='trigram'`. AFTER INSERT/UPDATE/DELETE
+triggers on the source tables keep the index in sync without changes to
+the upsert path; first migration to schema v9 rebuilds the index from
+existing rows.
+
+The search path runs as a two-stage fall-through:
+
+1. **LIKE stage** — substring match on `*_norm`. If it returns any row,
+   that result set is returned as-is. This keeps `Beatles` → just
+   `The Beatles` (no typo-candidate tail), matching how mainstream
+   search engines surface did-you-mean only when the literal query has
+   nothing.
+2. **Fuzzy stage** — fires only when the LIKE stage returned zero rows
+   AND the normalized query is ≥ 3 chars. FTS5 trigram tokenization
+   would naively phrase-match (`MATCH '"beatlse"'` requires the literal
+   substring), so the query side is decomposed into its own trigrams
+   and OR-combined: `MATCH '"bea" OR "eat" OR "atl" OR "tls" OR "lse"'`.
+   Candidates that share at least one trigram are then filtered by
+   `jaccard_trigram(col_norm, query_norm) >= 0.2` — the same set-based
+   similarity PostgreSQL `pg_trgm` uses, but with a threshold below the
+   pg_trgm default of 0.3 because short queries against long
+   prefixed names (`beatlse` ↔ `the beatles`, Jaccard ≒ 0.27) would
+   otherwise be cut. Surviving rows are ranked by Jaccard score
+   descending.
+
+The `jaccard_trigram(a, b)` scalar UDF is registered on every pooled
+connection (and inside `schema::migrate` for tests). Computes
+`|trigrams(a) ∩ trigrams(b)| / |trigrams(a) ∪ trigrams(b)|`. Returns 0.0
+for sub-3-char inputs or any NULL operand.
+
+Bound by `search.fuzzy_enabled` (default `true`, `ReloadTier::Runtime`)
+so a deployment can disable the fall-through entirely if it produces too
+many false positives.
+
+Compound predicates (AND/OR trees from non-Linn clients) stay on the
+LIKE-only path — fuzzy applies only to the single-leaf `Contains`
+shapes Linn actually sends.
+
 Out of scope (separate follow-ups): romaji conversion, edit-distance
-matching, FTS5 trigram.
+re-ranking, `sqlite-better-trigram` word-boundary tokenizer, MusicBrainz
+`~` explicit fuzzy operator, fuzzy on the Track-class 4-field OR
+composition.
 
 **Supported grammar:**
 
@@ -1504,6 +1548,19 @@ quality_in_title_show_specs = true           # include numeric specs like "Hi-Re
     values. `/admin/stats` exposes `tracks_with_replaygain` (count of
     rows with `rg_track_gain IS NOT NULL`) as a coverage diagnostic.
     DIDL exposure is deferred — see §10.2.
+
+24. Typo-tolerant Search (#28). Schema v9 adds FTS5 trigram virtual
+    tables `albums_fts` / `tracks_fts` mirroring the `*_norm` columns,
+    plus AFTER INSERT/UPDATE/DELETE triggers and a `'rebuild'` backfill
+    on first migration. New scalar UDF `jaccard_trigram(a, b)`
+    (`src/db/udf.rs`, registered on every pooled connection) computes
+    set-based trigram similarity. Search runs a two-stage fall-through
+    on the four single-leaf Contains paths: LIKE substring match first;
+    when it returns zero AND the normalized query is ≥ 3 chars, the
+    fuzzy path runs `FTS5 MATCH '"trigram1" OR "trigram2" …'` and gates
+    candidates by `jaccard_trigram >= 0.2`, ordering by Jaccard
+    descending. New config key `search.fuzzy_enabled` (default `true`,
+    `Runtime` tier) for per-deployment opt-out.
 
 ### Future Work
 

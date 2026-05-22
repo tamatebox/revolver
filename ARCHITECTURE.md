@@ -591,6 +591,16 @@ views default to flat — avoid sub-container cascades (see CLAUDE.md).
    The Contains leaf builds `col_norm LIKE '%norm(value)%'` — both column
    value and search input flow through `normalize::for_search`
    (NFKD → strip marks → lowercase → katakana→hiragana).
+        │
+        ▼   (single-leaf Contains, normalized query ≥ 3 chars, LIKE returned 0)
+   #28 fuzzy fall-through (search_albums_ranked / search_artists_value /
+   search_track_value / search_classical_facet):
+        ├─▶ albums_fts / tracks_fts MATCH on the OR-of-query-trigrams,
+        │     gated by jaccard_trigram(col_norm, query_norm) >= 0.2
+        ├─▶ ORDER BY Jaccard score DESC so the closest typo candidate
+        │     surfaces first
+        └─▶ Only runs when search.fuzzy_enabled (default true) and the LIKE
+              stage returned zero rows — mainstream did-you-mean semantics
         ▼
    DidlOutput → soap response → control point
 ```

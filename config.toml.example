@@ -26,6 +26,13 @@ parallel   = 8  # rayon thread count for tag reading
 # Random Albums caps, age window) are managed via the admin UI at
 # `http://<host>:8200/` — no toml keys here.
 
+# [search]
+# search.fuzzy_enabled (default true) — typo-tolerant fall-through via FTS5
+# trigram + Jaccard similarity. When the literal substring query returns
+# nothing, queries ≥ 3 chars run an additional pass that catches 1-2
+# character typos. Disable per-deployment via the admin UI if a particular
+# library produces too many false positives. See SPEC.md §5.4.
+
 # Decorate album titles with a quality tag (default off).
 # Example: "Album Name [Hi-Res 24/96]"
 quality_in_title         = false
