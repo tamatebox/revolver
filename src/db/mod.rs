@@ -9,6 +9,7 @@ pub mod config_overrides;
 pub mod schema;
 pub mod state_kv;
 pub mod tracks;
+pub mod udf;
 
 /// r2d2 connection pool shared by HTTP handlers.
 pub type Pool = r2d2::Pool<SqliteConnectionManager>;
@@ -35,7 +36,9 @@ pub fn pool(path: &Path) -> Result<Pool> {
              PRAGMA cache_size = -64000;
              PRAGMA busy_timeout = 5000;
              PRAGMA wal_autocheckpoint = 1000;",
-        )
+        )?;
+        // #28: per-connection UDFs used by fuzzy Search (jaccard_trigram).
+        udf::register(conn)
     });
     let pool = r2d2::Pool::builder().max_size(8).build(manager)?;
     {

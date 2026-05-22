@@ -269,9 +269,21 @@ fn search_albums(
 /// also satisfies one of the LIKE branches still ranks in its higher bucket
 /// because the CASE is evaluated top-down.
 ///
-/// Placeholders: `?1` = `%X%` LIKE value, `?2` = exact value, `?3` = FTS5
-/// phrase (only bound when fuzzy is eligible). LIMIT / OFFSET indices shift
-/// accordingly so the cached statements stay distinct per branch.
+/// Bucket-4 noise control (#28 refinement): trigram-OR alone admits any row
+/// that shares even one 3-gram with the query (`atl` matches both `beatles`
+/// and `atlas`). Each FTS5 candidate's `album_norm` / `effective_album_artist_norm`
+/// is therefore additionally required to clear `jaccard_trigram >= 0.2`. The
+/// threshold is intentionally below PostgreSQL `pg_trgm`'s default of 0.3
+/// because that default cuts realistic music-tag pairs like `"beatlse"` vs
+/// `"the beatles"` (Jaccard ≒ 0.27) — short queries against long names with
+/// prefixes/suffixes ("The …", "… Orchestra", etc.) need the lower bar.
+/// The same Jaccard score breaks ties inside the bucket so the closest
+/// typo candidate rises to the top.
+///
+/// Placeholders: `?1` = `%X%` LIKE value, `?2` = normalized exact value
+/// (bucket-0 equality compare and Jaccard RHS), `?3` = FTS5 trigram-OR query
+/// (only when fuzzy is eligible). LIMIT / OFFSET indices shift per branch
+/// so cached statements stay distinct.
 fn search_albums_ranked(
     ctx: &BrowseContext,
     value: &str,
@@ -285,13 +297,23 @@ fn search_albums_ranked(
     // Two SQL shapes: one with the FTS5 OR branch + bucket-4 CASE arm, one
     // without. Keeping them separate lets `prepare_cached` reuse each plan,
     // and avoids paying the trigram MATCH cost on short / disabled queries.
-    let (where_sql, order_case_extra, lim_idx, off_idx) = if fuzzy {
+    let (where_sql, order_case_extra, order_jaccard_tiebreak, lim_idx, off_idx) = if fuzzy {
         (
             "album_norm LIKE ?1
              OR effective_album_artist_norm LIKE ?1
              OR EXISTS (SELECT 1 FROM tracks WHERE album_id = albums.id AND artist_norm LIKE ?1)
-             OR albums.id IN (SELECT rowid FROM albums_fts WHERE albums_fts MATCH ?3)",
+             OR (
+                 albums.id IN (SELECT rowid FROM albums_fts WHERE albums_fts MATCH ?3)
+                 AND MAX(
+                     jaccard_trigram(album_norm, ?2),
+                     jaccard_trigram(effective_album_artist_norm, ?2)
+                 ) >= 0.2
+             )",
             "ELSE 4",
+            "MAX(
+                 jaccard_trigram(album_norm, ?2),
+                 jaccard_trigram(effective_album_artist_norm, ?2)
+             ) DESC,",
             4,
             5,
         )
@@ -301,6 +323,7 @@ fn search_albums_ranked(
              OR effective_album_artist_norm LIKE ?1
              OR EXISTS (SELECT 1 FROM tracks WHERE album_id = albums.id AND artist_norm LIKE ?1)",
             "ELSE 3",
+            "",
             3,
             4,
         )
@@ -338,6 +361,7 @@ fn search_albums_ranked(
              WHEN EXISTS (SELECT 1 FROM tracks WHERE album_id = albums.id AND artist_norm LIKE ?1) THEN 3
              {order_case_extra}
            END,
+           {order_jaccard_tiebreak}
            album_norm
          LIMIT ?{lim_idx} OFFSET ?{off_idx}"
     );
@@ -548,20 +572,32 @@ fn search_artists_value(
     let like_pat = format!("%{}%", norm);
     let fuzzy = fuzzy_eligible(ctx, &norm);
 
+    // Placeholders:
+    //   ?1 = `%X%` LIKE value
+    //   ?2 = FTS5 trigram-OR query for albums_fts (aa branch)
+    //   ?3 = FTS5 trigram-OR query for tracks_fts (tr branch)
+    //   ?4 = normalized exact value (Jaccard threshold + tie-break score)
     let (aa_where, tr_where, params): (String, String, Vec<SqlValue>) = if fuzzy {
         let aa_phrase = fts5_col_trigram_query("effective_album_artist_norm", &norm);
         let tr_phrase = fts5_col_trigram_query("artist_norm", &norm);
         (
             "effective_album_artist_norm LIKE ?1
-             OR id IN (SELECT rowid FROM albums_fts WHERE albums_fts MATCH ?2)"
-                .to_string(),
+             OR (
+                 id IN (SELECT rowid FROM albums_fts WHERE albums_fts MATCH ?2)
+                 AND jaccard_trigram(effective_album_artist_norm, ?4) >= 0.2
+             )"
+            .to_string(),
             "artist_norm LIKE ?1
-             OR id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?3)"
-                .to_string(),
+             OR (
+                 id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?3)
+                 AND jaccard_trigram(artist_norm, ?4) >= 0.2
+             )"
+            .to_string(),
             vec![
                 SqlValue::from(like_pat.clone()),
                 SqlValue::from(aa_phrase),
                 SqlValue::from(tr_phrase),
+                SqlValue::from(norm.clone()),
             ],
         )
     } else {
@@ -588,20 +624,35 @@ fn search_artists_value(
 
     let lim_idx = params.len() + 1;
     let off_idx = params.len() + 2;
+    // #28 bucket-4 tie-break: also surface the per-row Jaccard score (when
+    // fuzzy is on) so a name with more trigram overlap to the query bubbles
+    // up. Non-fuzzy branch carries an empty score column slot so the SELECT
+    // arity matches the UNION peer.
+    let (score_aa, score_tr, order_score) = if fuzzy {
+        (
+            ", jaccard_trigram(effective_album_artist_norm, ?4) AS score",
+            ", jaccard_trigram(artist_norm, ?4) AS score",
+            "MAX(score) DESC, ",
+        )
+    } else {
+        ("", "", "")
+    };
     let sql = format!(
         "SELECT name, MAX(is_aa) AS is_aa
          FROM (
            SELECT effective_album_artist AS name,
                   effective_album_artist_norm AS name_norm,
                   1 AS is_aa
+                  {score_aa}
              FROM albums WHERE {aa_where}
            UNION ALL
            SELECT artist AS name, artist_norm AS name_norm, 0 AS is_aa
+                  {score_tr}
              FROM tracks
              WHERE artist IS NOT NULL AND artist != '' AND {tr_where}
          )
          GROUP BY name
-         ORDER BY MIN(name_norm)
+         ORDER BY {order_score}MIN(name_norm)
          LIMIT ?{lim_idx} OFFSET ?{off_idx}"
     );
     let mut list_params = params.clone();
@@ -790,14 +841,25 @@ fn search_track_value(
     let like_pat = format!("%{}%", norm);
     let fuzzy = fuzzy_eligible(ctx, &norm);
 
+    // Placeholders:
+    //   ?1 = `%X%` LIKE value
+    //   ?2 = FTS5 trigram-OR query for tracks_fts (fuzzy only)
+    //   ?3 = normalized exact value (Jaccard threshold + tie-break, fuzzy only)
     let (where_sql, params): (String, Vec<SqlValue>) = if fuzzy {
         let phrase = fts5_col_trigram_query(column, &norm);
         (
             format!(
                 "t.{column} LIKE ?1
-                 OR t.id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?2)"
+                 OR (
+                     t.id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?2)
+                     AND jaccard_trigram(t.{column}, ?3) >= 0.2
+                 )"
             ),
-            vec![SqlValue::from(like_pat.clone()), SqlValue::from(phrase)],
+            vec![
+                SqlValue::from(like_pat.clone()),
+                SqlValue::from(phrase),
+                SqlValue::from(norm.clone()),
+            ],
         )
     } else {
         (
@@ -818,9 +880,12 @@ fn search_track_value(
     let off_idx = params.len() + 2;
     // bucket 0 = LIKE hit, bucket 1 = trigram-only typo hit (only present
     // when fuzzy is on; otherwise the CASE collapses to a single arm).
+    // Within bucket 1, sort by Jaccard score descending so the closest
+    // typo candidate appears first.
     let order_case = if fuzzy {
         format!(
             "CASE WHEN t.{column} LIKE ?1 THEN 0 ELSE 1 END,
+                 jaccard_trigram(t.{column}, ?3) DESC,
                  t.title_norm"
         )
     } else {
@@ -944,23 +1009,31 @@ fn search_classical_facet(
     }
 
     // #28: single-leaf Contains? Add a column-restricted FTS5 MATCH OR-branch
-    // against the same `{column}_norm` so typos still surface a hit. Compound
+    // against the same `{column}_norm` (gated by Jaccard ≥ 0.3 to suppress
+    // bucket-4 noise) and rank typo hits by Jaccard score. Compound
     // predicates (AND/OR trees) stay on the walk()/LIKE path — out of scope
     // per #28.
-    let (effective_where, effective_params) = {
+    let (effective_where, effective_params, jaccard_order) = {
         let mut sql = where_clause.sql.clone();
         let mut params = where_clause.params.clone();
+        let mut order = String::new();
         if let Some(value) = single_contains_value_for_classical(predicate) {
             let norm = crate::normalize::for_search(value);
             if fuzzy_eligible(ctx, &norm) {
-                let next_idx = params.len() + 1;
+                let phrase_idx = params.len() + 1;
+                let norm_idx = params.len() + 2;
                 sql = format!(
-                    "({sql} OR id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?{next_idx}))"
+                    "({sql} OR (
+                         id IN (SELECT rowid FROM tracks_fts WHERE tracks_fts MATCH ?{phrase_idx})
+                         AND jaccard_trigram({norm_col}, ?{norm_idx}) >= 0.2
+                     ))"
                 );
                 params.push(SqlValue::from(fts5_col_trigram_query(norm_col, &norm)));
+                params.push(SqlValue::from(norm.clone()));
+                order = format!("jaccard_trigram({norm_col}, ?{norm_idx}) DESC, ");
             }
         }
-        (sql, params)
+        (sql, params, order)
     };
 
     let count_sql = format!(
@@ -981,11 +1054,12 @@ fn search_classical_facet(
     let sql = format!(
         "SELECT DISTINCT {col} FROM tracks
          WHERE {col} IS NOT NULL AND {col} != '' AND {where_}
-         ORDER BY {norm_col}
+         ORDER BY {jaccard_order}{norm_col}
          LIMIT ?{lim} OFFSET ?{off}",
         col = column,
         norm_col = norm_col,
         where_ = effective_where,
+        jaccard_order = jaccard_order,
         lim = effective_params.len() + 1,
         off = effective_params.len() + 2,
     );
@@ -2178,6 +2252,213 @@ mod tests {
         conn.execute("DELETE FROM albums WHERE id = ?1", rusqlite::params![id])
             .unwrap();
         assert_eq!(hits("specter"), 0);
+    }
+
+    // ── #28: Jaccard threshold cuts bucket-4 noise ────────────────────────
+
+    /// Helper: 3-album library — the typo target plus two "incidental
+    /// 1-trigram overlap" decoys that would land in bucket 4 *without*
+    /// the Jaccard threshold filter. Used by tza* / tzb* to demonstrate
+    /// noise control independent of `seed_db()`.
+    fn seed_noise_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::schema::migrate(&conn).unwrap();
+        for (aa, album, title) in [
+            ("The Beatles", "Abbey Road", "Come Together"),
+            // "Atlas" shares only `atl` with "beatles" → trigram OR would
+            // hit but Jaccard ≒ 0.14, below the 0.2 cut.
+            ("Atlas Group", "Bridges", "Span"),
+            // "Beach Boys" shares only `bea` → Jaccard ≒ 0.08, also cut.
+            ("Beach Boys", "Help", "Surfin' Safari"),
+        ] {
+            let aid = crate::db::albums::upsert(
+                &conn,
+                &crate::db::albums::AlbumKey {
+                    effective_album_artist: aa,
+                    album,
+                    compilation: false,
+                },
+                Some(aa),
+                0,
+            )
+            .unwrap();
+            crate::db::tracks::upsert(
+                &conn,
+                &crate::db::tracks::TrackRow {
+                    album_id: aid,
+                    path: &format!("/m/{aa}-{title}.flac"),
+                    title: Some(title),
+                    artist: Some(aa),
+                    genre: None,
+                    track_num: Some(1),
+                    disc_num: Some(1),
+                    duration_ms: Some(1),
+                    sample_rate: Some(44100),
+                    bit_depth: Some(16),
+                    channels: Some(2),
+                    bitrate: Some(1),
+                    codec: "flac",
+                    mime_type: "audio/flac",
+                    file_size: 1,
+                    added_at: 0,
+                    mtime: 0,
+                    composer: None,
+                    conductor: None,
+                    performer: None,
+                    year: None,
+                    rg_track_gain: None,
+                    rg_track_peak: None,
+                    rg_album_gain: None,
+                    rg_album_peak: None,
+                    artist_sort: None,
+                    album_artist_sort: None,
+                    album_sort: None,
+                    title_sort: None,
+                    composer_sort: None,
+                    original_year: None,
+                    mb_recording_id: None,
+                    mb_release_id: None,
+                    mb_release_group_id: None,
+                    mb_artist_id: None,
+                    mb_release_artist_id: None,
+                },
+            )
+            .unwrap();
+        }
+        crate::db::albums::recalc_counts(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn tza_album_class_noise_decoys_are_cut_by_jaccard() {
+        // Without the threshold, `atl` (Beatles ↔ Atlas) and `bea` (Beatles ↔
+        // Beach Boys) would each promote a row into bucket 4. With Jaccard ≥
+        // 0.2 in place, only the real Beatles album survives.
+        let conn = seed_noise_db();
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.album" and dc:title contains "Beatles""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(
+            r.total_matches,
+            1,
+            "expected 1, got titles: {:?}",
+            r.didl
+                .containers
+                .iter()
+                .map(|c| &c.title)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(r.didl.containers[0].title, "Abbey Road");
+    }
+
+    #[test]
+    fn tzb_album_class_typo_still_hits_with_noise_present() {
+        // The bucket-4 noise filter must not eat real typos. "Beatlse" (1-char
+        // swap) → "The Beatles" is the canonical case; the Atlas / Beach Boys
+        // decoys must still get filtered out so we end up with exactly 1 hit.
+        let conn = seed_noise_db();
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.album" and dc:title contains "Beatlse""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        assert_eq!(
+            r.total_matches,
+            1,
+            "expected 1, got titles: {:?}",
+            r.didl
+                .containers
+                .iter()
+                .map(|c| &c.title)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(r.didl.containers[0].title, "Abbey Road");
+    }
+
+    #[test]
+    fn tzc_jaccard_tiebreak_orders_closer_typo_first() {
+        // Two candidates that both pass the threshold but with different
+        // similarity. Closer Jaccard score must surface first inside bucket 4.
+        //
+        // - "Yesterdayy" (one extra char vs "Yesterday") → very high Jaccard
+        // - "Yseterday" (transposition) → also high but slightly different
+        // We seed three albums; the typo query "Yseterday" should rank the
+        // higher-Jaccard candidate above the lower one.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        crate::db::schema::migrate(&conn).unwrap();
+        for (aa, album) in [
+            // Closer to the typo "Yseterday" — shares many trigrams.
+            ("Artist A", "Yesterday"),
+            // Further: same prefix, longer suffix dilutes Jaccard.
+            ("Artist B", "Yesterday and Tomorrow Forever"),
+        ] {
+            let aid = crate::db::albums::upsert(
+                &conn,
+                &crate::db::albums::AlbumKey {
+                    effective_album_artist: aa,
+                    album,
+                    compilation: false,
+                },
+                Some(aa),
+                0,
+            )
+            .unwrap();
+            crate::db::tracks::upsert(
+                &conn,
+                &crate::db::tracks::TrackRow {
+                    album_id: aid,
+                    path: &format!("/m/{album}.flac"),
+                    title: Some("t"),
+                    artist: Some(aa),
+                    genre: None,
+                    track_num: Some(1),
+                    disc_num: Some(1),
+                    duration_ms: Some(1),
+                    sample_rate: Some(44100),
+                    bit_depth: Some(16),
+                    channels: Some(2),
+                    bitrate: Some(1),
+                    codec: "flac",
+                    mime_type: "audio/flac",
+                    file_size: 1,
+                    added_at: 0,
+                    mtime: 0,
+                    composer: None,
+                    conductor: None,
+                    performer: None,
+                    year: None,
+                    rg_track_gain: None,
+                    rg_track_peak: None,
+                    rg_album_gain: None,
+                    rg_album_peak: None,
+                    artist_sort: None,
+                    album_artist_sort: None,
+                    album_sort: None,
+                    title_sort: None,
+                    composer_sort: None,
+                    original_year: None,
+                    mb_recording_id: None,
+                    mb_release_id: None,
+                    mb_release_group_id: None,
+                    mb_artist_id: None,
+                    mb_release_artist_id: None,
+                },
+            )
+            .unwrap();
+        }
+        crate::db::albums::recalc_counts(&conn).unwrap();
+
+        let e = parse_criteria(
+            r#"upnp:class derivedfrom "object.container.album" and dc:title contains "Yseterday""#,
+        );
+        let r = search_tracks(&ctx(&conn), &e, 0, 100).unwrap();
+        // Both pass the threshold (both share many trigrams with "yseterday"),
+        // but the shorter / closer "Yesterday" has the higher Jaccard score
+        // and must be returned first.
+        assert!(r.total_matches >= 1);
+        assert_eq!(r.didl.containers[0].title, "Yesterday");
     }
 
     // ── Pagination still works ────────────────────────────────────────────

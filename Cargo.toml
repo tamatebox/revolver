@@ -21,7 +21,7 @@ rayon = "1"
 # Targets are LAN-only HTTP (gated by notify.rs:is_lan_host), so TLS is unnecessary.
 # default-features = false drops the OpenSSL/native-tls dependency and keeps the binary small.
 reqwest = { version = "0.12", default-features = false }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "functions"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 socket2 = { version = "0.5", features = ["all"] }

@@ -259,6 +259,12 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     // `IF NOT EXISTS` on every CREATE; the trigger set is fixed-shape so a
     // second migrate() is a no-op.
     ensure_search_fts(conn)?;
+    // #28: register per-connection UDFs (jaccard_trigram). Production paths
+    // already register these via `db::pool`'s `with_init` hook, but tests
+    // build a `Connection::open_in_memory()` directly and rely on migrate()
+    // to surface a fully usable DB. `create_scalar_function` is idempotent
+    // (re-registers replace the binding), so double-registration is fine.
+    crate::db::udf::register(conn)?;
     // Write schema_version only after all ALTERs succeed. By **not writing on
     // pre-init or failure**, we keep the invariant: "migrate completed" ⇒ "schema
     // matches SCHEMA_VERSION".
