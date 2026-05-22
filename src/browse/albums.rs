@@ -55,7 +55,7 @@ pub fn albums_by_aa_children(
     let mut containers: Vec<Container> = Vec::new();
     let (album_offset, album_limit) =
         shortcut_split(has_shortcut, start, count, &mut containers, || {
-            super::artist_tracks::build_at_container(aa_name, track_count, parent_id.clone())
+            super::artist_tracks::build_at_container(ctx, aa_name, track_count, parent_id.clone())
         });
 
     if album_limit > 0 {
@@ -141,7 +141,12 @@ pub fn albums_by_artist_children(
     let mut containers: Vec<Container> = Vec::new();
     let (album_offset, album_limit) =
         shortcut_split(has_shortcut, start, count, &mut containers, || {
-            super::artist_tracks::build_at_container(artist_name, track_count, parent_id.clone())
+            super::artist_tracks::build_at_container(
+                ctx,
+                artist_name,
+                track_count,
+                parent_id.clone(),
+            )
         });
 
     if album_limit > 0 {

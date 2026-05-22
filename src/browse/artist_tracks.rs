@@ -31,6 +31,7 @@ pub fn artist_tracks_metadata(ctx: &BrowseContext, artist_name: &str) -> Result<
     )?;
     let parent_id = parent_for(ctx, artist_name)?;
     Ok(single(build_at_container(
+        ctx,
         artist_name,
         track_count,
         parent_id,
@@ -108,8 +109,17 @@ pub fn artist_tracks_children(
 }
 
 /// Build the `at:{name}` shortcut container shown inside `aa:{X}` / `ar:{X}`.
-/// Public so [`super::albums`] can prepend it before the album list.
-pub(crate) fn build_at_container(name: &str, track_count: i64, parent_id: String) -> Container {
+/// Public so [`super::albums`] can prepend it before the album list. Carries
+/// the bespoke `cat-at` icon (same `/icon/cat/{slug}` mechanism as root
+/// facets — see [`super::categories::cat_with_icon`]) so the "All tracks" row
+/// is visually distinguishable from the sibling album thumbnails.
+pub(crate) fn build_at_container(
+    ctx: &BrowseContext,
+    name: &str,
+    track_count: i64,
+    parent_id: String,
+) -> Container {
+    let host_base = ctx.art_base_url.trim_end_matches("/art");
     Container {
         id: object_id::encode(&ObjectId::ArtistTracks(name.to_string())),
         parent_id,
@@ -117,7 +127,7 @@ pub(crate) fn build_at_container(name: &str, track_count: i64, parent_id: String
         upnp_class: "object.container",
         child_count: Some(track_count),
         artist: None,
-        album_art_uri: None,
+        album_art_uri: Some(format!("{host_base}/icon/cat/at")),
     }
 }
 
@@ -288,6 +298,12 @@ mod tests {
         assert!(r.containers[0].parent_id.starts_with("aa:"));
         assert_eq!(r.containers[0].title, "All tracks (3)");
         assert_eq!(r.containers[0].child_count, Some(3));
+        // bespoke cat-at icon URL is reconstructed off art_base_url.
+        assert_eq!(
+            r.containers[0].album_art_uri.as_deref(),
+            Some("http://x/icon/cat/at")
+        );
+        assert!(crate::upnp::icon::category_icon("at").is_some());
     }
 
     #[test]

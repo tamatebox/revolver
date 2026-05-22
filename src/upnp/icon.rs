@@ -26,6 +26,7 @@ pub const CATEGORY_ICONS: &[(&str, &[u8])] = &[
     ("aa",     include_bytes!("../../assets/category-icons/cat-aa.png")),
     ("al",     include_bytes!("../../assets/category-icons/cat-al.png")),
     ("ar",     include_bytes!("../../assets/category-icons/cat-ar.png")),
+    ("at",     include_bytes!("../../assets/category-icons/cat-at.png")),
     ("cm",     include_bytes!("../../assets/category-icons/cat-cm.png")),
     ("cn",     include_bytes!("../../assets/category-icons/cat-cn.png")),
     ("dec",    include_bytes!("../../assets/category-icons/cat-dec.png")),

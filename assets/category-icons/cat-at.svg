@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- revolver — category icon for `at:{X}` ("All tracks by X" shortcut). Stacked rows of varied widths read as a flat tracklist of song titles; an orange play wedge to the left of the stack reads as "play the lot". -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" shape-rendering="geometricPrecision">
+  <rect x="2" y="2" width="116" height="116" rx="24" fill="#ede4d0"/>
+  <rect x="2" y="2" width="116" height="116" rx="24" fill="none" stroke="#c8bea4" stroke-width="0.8"/>
+
+  <!-- Track rows: varied widths read as a tracklist of song titles -->
+  <g fill="#161616">
+    <rect x="44" y="32" width="56" height="8" rx="4"/>
+    <rect x="44" y="50" width="48" height="8" rx="4"/>
+    <rect x="44" y="68" width="52" height="8" rx="4"/>
+    <rect x="44" y="86" width="44" height="8" rx="4"/>
+  </g>
+
+  <!-- Orange play wedge to the left of the stack — "play all" -->
+  <path d="M 20 46 L 20 78 L 36 62 Z" fill="#d6651f"/>
+</svg>
