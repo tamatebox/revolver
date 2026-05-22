@@ -311,7 +311,10 @@
     }
     .array-item {
       display: grid;
-      grid-template-columns: auto auto 1fr auto;
+      /* The trailing 1fr column absorbs leftover row width so move-btns
+         (justify-self: end below) snaps to the right edge regardless of
+         how long the label happens to be. */
+      grid-template-columns: auto auto auto 1fr;
       align-items: center;
       gap: 0.4em;
       padding: 0.3em 0.35em;
@@ -339,6 +342,7 @@
     .move-btns {
       display: none;
       gap: 0.15em;
+      justify-self: end;
     }
     .move-btn {
       background: transparent;
