@@ -64,6 +64,19 @@ pub async fn icon_512() -> Response {
         .into_response()
 }
 
+/// `GET /icon/1024.png` — highest-resolution icon for high-DPI device-picker
+/// tiles (e.g. iPad Pro / 4K UI). Advertised first in `<iconList>` so Linn-
+/// style "pick the first entry" clients receive the sharpest asset, and
+/// available to any other control point that requests it by URL.
+pub async fn icon_1024() -> Response {
+    (
+        StatusCode::OK,
+        [("content-type", icon::MIME)],
+        icon::ICON_1024_PNG,
+    )
+        .into_response()
+}
+
 /// `GET /icon.svg` — vector icon used as the admin UI favicon. Not part of
 /// the UPnP `<iconList>` (control points stick to the PNG sizes).
 pub async fn icon_svg() -> Response {

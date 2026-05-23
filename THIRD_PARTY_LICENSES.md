@@ -6,13 +6,14 @@ revolver itself is MIT-licensed (see [LICENSE](LICENSE)). The following third-pa
 
 ## Lucide (ISC License)
 
-Two category icons reuse path data adapted from the [Lucide](https://lucide.dev/) icon set (specifically the `history` glyph):
+Several bundled icons reuse path data adapted from the [Lucide](https://lucide.dev/) icon set:
 
-- [assets/category-icons/cat-recent.svg](assets/category-icons/cat-recent.svg)
-- [assets/category-icons/cat-played.svg](assets/category-icons/cat-played.svg)
+- [assets/category-icons/cat-recent.svg](assets/category-icons/cat-recent.svg) — `history` glyph
+- [assets/category-icons/cat-played.svg](assets/category-icons/cat-played.svg) — `history` glyph
+- [assets/album-fallback.svg](assets/album-fallback.svg) — `music` glyph (beamed eighth notes, served from `/art/{id}` when no embedded picture or folder image is available)
 - (and their `.png` derivatives generated from the SVGs)
 
-The path geometry is taken verbatim from Lucide; only the surrounding tile, color palette, and the central verb badge (`+` / `▶`) are revolver-original. See [docs/icon-design.md](docs/icon-design.md) for the integration details.
+The path geometry is taken verbatim from Lucide; only the surrounding tile, color palette, and (for `cat-recent` / `cat-played`) the central verb badge are revolver-original. See [docs/icon-design.md](docs/icon-design.md) for the integration details.
 
 ### License text
 

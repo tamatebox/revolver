@@ -18,10 +18,17 @@ const TEMPLATE: &str = r#"<?xml version="1.0"?>
     <iconList>
       <icon>
         <mimetype>image/png</mimetype>
-        <width>48</width>
-        <height>48</height>
+        <width>1024</width>
+        <height>1024</height>
         <depth>32</depth>
-        <url>/icon/48.png</url>
+        <url>/icon/1024.png</url>
+      </icon>
+      <icon>
+        <mimetype>image/png</mimetype>
+        <width>512</width>
+        <height>512</height>
+        <depth>32</depth>
+        <url>/icon/512.png</url>
       </icon>
       <icon>
         <mimetype>image/png</mimetype>
@@ -32,10 +39,10 @@ const TEMPLATE: &str = r#"<?xml version="1.0"?>
       </icon>
       <icon>
         <mimetype>image/png</mimetype>
-        <width>512</width>
-        <height>512</height>
+        <width>48</width>
+        <height>48</height>
         <depth>32</depth>
-        <url>/icon/512.png</url>
+        <url>/icon/48.png</url>
       </icon>
     </iconList>
     <serviceList>
@@ -88,7 +95,23 @@ mod tests {
         assert!(xml.contains("<url>/icon/48.png</url>"));
         assert!(xml.contains("<url>/icon/120.png</url>"));
         assert!(xml.contains("<url>/icon/512.png</url>"));
+        assert!(xml.contains("<url>/icon/1024.png</url>"));
         assert!(xml.contains("<mimetype>image/png</mimetype>"));
+
+        // Order: largest → smallest. UPnP MediaServer 1.0 does not assign
+        // meaning to `<icon>` order, but some control points (Linn DSM/2 /
+        // Linn App verified 2026-05-23) pick the first entry regardless
+        // of advertised dimensions. Putting 1024 first biases those
+        // clients toward the high-resolution asset; clients that respect
+        // the declared dimensions are free to pick whichever size fits.
+        let i1024 = xml.find("<url>/icon/1024.png</url>").unwrap();
+        let i512 = xml.find("<url>/icon/512.png</url>").unwrap();
+        let i120 = xml.find("<url>/icon/120.png</url>").unwrap();
+        let i48 = xml.find("<url>/icon/48.png</url>").unwrap();
+        assert!(
+            i1024 < i512 && i512 < i120 && i120 < i48,
+            "iconList must list 1024 → 512 → 120 → 48"
+        );
     }
 
     #[test]

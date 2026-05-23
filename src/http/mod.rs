@@ -80,6 +80,7 @@ pub fn router(state: AppState) -> Router {
         .route("/icon/48.png", get(upnp::icon_48))
         .route("/icon/120.png", get(upnp::icon_120))
         .route("/icon/512.png", get(upnp::icon_512))
+        .route("/icon/1024.png", get(upnp::icon_1024))
         .route("/icon.svg", get(upnp::icon_svg))
         .route("/icon/cat/{slug}", get(upnp::icon_category))
         .route("/event/cd", any(gena::event_cd))

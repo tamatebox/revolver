@@ -7,6 +7,7 @@
 pub const ICON_48_PNG: &[u8] = include_bytes!("../../assets/icon-48.png");
 pub const ICON_120_PNG: &[u8] = include_bytes!("../../assets/icon-120.png");
 pub const ICON_512_PNG: &[u8] = include_bytes!("../../assets/icon-512.png");
+pub const ICON_1024_PNG: &[u8] = include_bytes!("../../assets/icon-1024.png");
 
 /// Source SVG used as the admin UI favicon (`/icon.svg`). Not referenced by
 /// `<iconList>` — UPnP control points stick to the PNG sizes.

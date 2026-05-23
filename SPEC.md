@@ -510,14 +510,27 @@ invalidate their Browse cache.
   - `ConnectionManager:1`
 - `friendlyName` is configurable (default: `"Revolver"`).
 - UUID is persistent (`server_state.uuid`, v4 generated on first run).
-- `<iconList>` advertises three PNGs embedded in the binary, served from
-  `/icon/48.png` (48×48), `/icon/120.png` (120×120), and `/icon/512.png`
-  (512×512, for the device-picker tile on modern control points). Source SVG
-  lives at `assets/icon.svg`; PNGs are pre-rendered and committed under
-  `assets/`.
+- `<iconList>` advertises four PNGs embedded in the binary, served from
+  `/icon/48.png` (48×48), `/icon/120.png` (120×120), `/icon/512.png`
+  (512×512), and `/icon/1024.png` (1024×1024, for high-DPI device-picker
+  tiles on retina-class control points). Source SVG lives at
+  `assets/icon.svg`; PNGs are pre-rendered and committed under `assets/`.
+- **Order is largest → smallest** (`1024 → 512 → 120 → 48`). UPnP
+  MediaServer 1.0 does not assign meaning to `<icon>` order, but Linn DSM/2
+  / Linn App were verified (2026-05-23) to pick the **first** entry
+  regardless of declared `width`/`height`. Reversing the list from
+  smallest-first (the historical DLNA convention) to largest-first switched
+  the Linn "Sources" thumbnail from a visibly pixelated render (the 48×48
+  PNG scaled up) to a sharp render. 1024 is offered as the top entry so
+  retina clients receive maximum resolution; clients that honor the
+  declared dimensions are free to pick whichever fits. Future multi-size
+  DLNA asset lists should follow the same largest-first convention.
 - Per-facet container icons (e.g. the speaker icon on `cat:played`) are
   served from `/icon/cat/{slug}` and referenced by `<upnp:albumArtURI>` on
   the root container entries ([src/upnp/icon.rs](src/upnp/icon.rs), #24).
+  The `at:{X}` "All tracks by X" shortcut (#23) reuses the same endpoint
+  (slug `at`) so it carries a distinct thumbnail next to the surrounding
+  album sleeves under `aa:{X}` / `ar:{X}`.
 
 ### 5.3 ContentDirectory:1
 
@@ -1170,7 +1183,14 @@ Endpoint: `GET /art/{album_id}?v={version}`.
    - `folder.jpg` / `folder.png`
    - `front.jpg` / `front.png`
    - Any other `*.jpg` / `*.png` (lexicographic).
-3. None → `404`.
+3. None → **fallback PNG** (`assets/album-fallback.png`, served from the same
+   `/art/{album_id}` URL with `Cache-Control: public, max-age=300`). The
+   short max-age — vs 24h for real art — is the window for a follow-up
+   scan or folder-image drop to take effect without a manual cache flush.
+   The fallback bytes are not stored in `art_cache`, so a subsequent
+   request after art is added re-runs extraction and serves the real
+   image. A 404 is reserved for an unknown `album_id` (no row, or a row
+   with no tracks).
 
 **Cache**:
 
