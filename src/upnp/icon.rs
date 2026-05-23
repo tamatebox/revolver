@@ -13,6 +13,17 @@ pub const ICON_512_PNG: &[u8] = include_bytes!("../../assets/icon-512.png");
 pub const ICON_SVG: &[u8] = include_bytes!("../../assets/icon.svg");
 pub const SVG_MIME: &str = "image/svg+xml";
 
+/// Placeholder served by `/art/{id}` when an album row exists but no embedded
+/// picture or folder image could be extracted. Single eighth note on the
+/// shared cream/border palette — intentionally distinct from `cat-al`
+/// (which uses the sleeve+record metaphor) so a Linn grid distinguishes
+/// "this is the Albums facet" from "this album has no art".
+///
+/// Served with a short `Cache-Control` so adding art later (re-scan,
+/// folder-image drop) refreshes within minutes, not the 24h applied to real
+/// art bytes.
+pub const ALBUM_FALLBACK_PNG: &[u8] = include_bytes!("../../assets/album-fallback.png");
+
 /// Per-category icons (#24). Each entry is the `{slug}` half of the
 /// `/icon/cat-{slug}.png` URL paired with the embedded PNG bytes. Source SVGs
 /// live next to the PNGs (`assets/category-icons/`) and are rasterized at

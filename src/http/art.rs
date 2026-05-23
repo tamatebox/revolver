@@ -27,6 +27,19 @@ pub struct ArtQuery {
     pub v: Option<String>,
 }
 
+/// Tri-state outcome of the per-request extraction:
+/// - `Found` — embedded picture or folder image was extracted; serve + cache.
+/// - `NoArt` — album row exists and has tracks, but no art was found; serve
+///   the fallback placeholder so Linn shows a branded thumbnail instead of a
+///   raw 404 blank.
+/// - `NoSuchAlbum` — the album id has no tracks at all (invalid id or empty
+///   row); stays a 404 so client bugs are still visible.
+enum ArtOutcome {
+    Found(CachedArt),
+    NoArt,
+    NoSuchAlbum,
+}
+
 pub async fn handler(
     State(state): State<AppState>,
     Path(album_id): Path<i64>,
@@ -41,40 +54,41 @@ pub async fn handler(
     //    Extraction is blocking I/O, so offload to spawn_blocking (file read + lofty parse).
     let pool = state.db_pool.clone();
     let art_cache = state.art_cache.clone();
-    let extracted: Option<CachedArt> =
-        tokio::task::spawn_blocking(move || -> Result<Option<CachedArt>, HttpError> {
+    let outcome: ArtOutcome =
+        tokio::task::spawn_blocking(move || -> Result<ArtOutcome, HttpError> {
             let conn = pool.get()?;
             let Some(track_path) = db::albums::get_representative_track_path(&conn, album_id)?
             else {
-                return Ok(None);
+                return Ok(ArtOutcome::NoSuchAlbum);
             };
             drop(conn);
 
             if let Some((bytes, mime)) = extract::extract_embedded(&track_path) {
-                return Ok(Some(CachedArt {
+                return Ok(ArtOutcome::Found(CachedArt {
                     bytes: Bytes::from(bytes),
                     mime,
                 }));
             }
             if let Some(parent) = track_path.parent() {
                 if let Some((bytes, mime, _src)) = extract::extract_folder(parent) {
-                    return Ok(Some(CachedArt {
+                    return Ok(ArtOutcome::Found(CachedArt {
                         bytes: Bytes::from(bytes),
                         mime,
                     }));
                 }
             }
-            Ok(None)
+            Ok(ArtOutcome::NoArt)
         })
         .await
         .map_err(|e| HttpError::Internal(anyhow::Error::new(e)))??;
 
-    match extracted {
-        Some(art) => {
+    match outcome {
+        ArtOutcome::Found(art) => {
             art_cache.put(album_id, art.clone());
             Ok(response_for(art))
         }
-        None => Err(HttpError::NotFound),
+        ArtOutcome::NoArt => Ok(placeholder_response()),
+        ArtOutcome::NoSuchAlbum => Err(HttpError::NotFound),
     }
 }
 
@@ -88,6 +102,22 @@ fn response_for(art: CachedArt) -> Response {
             (header::CACHE_CONTROL, "public, max-age=86400"),
         ],
         Body::from(art.bytes),
+    )
+        .into_response()
+}
+
+/// Response served when an album exists but no art could be extracted.
+/// Short `max-age` (5 min, vs 24h for real art) so that adding a folder image
+/// or re-tagging a file refreshes the thumbnail within minutes rather than
+/// being cached as the placeholder for a full day.
+fn placeholder_response() -> Response {
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=300"),
+        ],
+        Body::from(crate::upnp::icon::ALBUM_FALLBACK_PNG),
     )
         .into_response()
 }
@@ -159,16 +189,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ah3_get_art_no_picture_returns_404() {
+    async fn ah3_get_art_no_picture_serves_placeholder() {
+        // Album exists with a track, but no embedded picture and no folder image:
+        // we now serve the bundled fallback PNG instead of 404 so Linn renders a
+        // branded thumbnail. Cache-Control deliberately short (5 min) so newly
+        // added art shows up quickly on the next browse.
         let (state, _dbdir, libdir) = test_state_with_library();
         fs::write(libdir.path().join("track.flac"), b"fake-flac").unwrap();
-        // No image in the folder either.
         let aid = insert_album_with_track(&state, "track.flac");
 
-        let err = handler(AxState(state), AxPath(aid), AxQuery(ArtQuery { v: None }))
+        let res = handler(AxState(state), AxPath(aid), AxQuery(ArtQuery { v: None }))
             .await
-            .expect_err("must 404");
-        assert!(matches!(err, HttpError::NotFound));
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
+        assert_eq!(
+            res.headers().get(header::CACHE_CONTROL).unwrap(),
+            "public, max-age=300"
+        );
+        let body = to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        assert_eq!(&body[..], crate::upnp::icon::ALBUM_FALLBACK_PNG);
     }
 
     #[tokio::test]
