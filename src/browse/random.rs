@@ -58,7 +58,6 @@ pub fn random_albums_children(
         didl: DidlOutput {
             containers,
             items: vec![],
-            nodes: vec![],
         },
         total_matches: total,
     })

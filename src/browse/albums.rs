@@ -19,12 +19,15 @@ pub fn album_metadata(ctx: &BrowseContext, album_id: i64) -> Result<DidlOutput> 
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(|e| Error::sqlite_or_not_found(e, "album", album_id))?;
+    // Direct-child count must match what `album_tracks_children` actually
+    // lists: per-disc folders for a cleanly multi-disc album, else tracks.
+    let child_count = super::tracks::album_child_count(ctx, album_id, track_count);
     Ok(single(Container {
         id: format!("alb:{album_id}"),
         parent_id: "cat:al".to_string(),
         title: album,
         upnp_class: "object.container.album.musicAlbum",
-        child_count: Some(track_count),
+        child_count: Some(child_count),
         artist: Some(eff_aa),
         album_art_uri: Some(format!("{}/{}", ctx.art_base_url, album_id)),
     }))
@@ -79,7 +82,6 @@ pub fn albums_by_aa_children(
         didl: DidlOutput {
             containers,
             items: vec![],
-            nodes: vec![],
         },
         total_matches: total as usize,
     })
@@ -172,7 +174,6 @@ pub fn albums_by_artist_children(
         didl: DidlOutput {
             containers,
             items: vec![],
-            nodes: vec![],
         },
         total_matches: total as usize,
     })
@@ -213,7 +214,6 @@ pub fn albums_by_genre_children(
         didl: DidlOutput {
             containers,
             items: vec![],
-            nodes: vec![],
         },
         total_matches: total as usize,
     })
@@ -291,7 +291,6 @@ pub fn albums_by_year_children(
         didl: DidlOutput {
             containers,
             items: vec![],
-            nodes: vec![],
         },
         total_matches: total as usize,
     })
@@ -386,7 +385,6 @@ fn albums_by_unknown_facet_children(
         didl: DidlOutput {
             containers,
             items: vec![],
-            nodes: vec![],
         },
         total_matches: total as usize,
     })
@@ -432,7 +430,6 @@ pub fn albums_by_decade_children(
         didl: DidlOutput {
             containers,
             items: vec![],
-            nodes: vec![],
         },
         total_matches: total as usize,
     })
@@ -480,7 +477,6 @@ fn albums_by_facet_children(
         didl: DidlOutput {
             containers,
             items: vec![],
-            nodes: vec![],
         },
         total_matches: total as usize,
     })

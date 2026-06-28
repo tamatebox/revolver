@@ -34,7 +34,6 @@ pub fn root_children(ctx: &BrowseContext) -> ChildrenResult {
         didl: DidlOutput {
             containers,
             items: vec![],
-            nodes: vec![],
         },
         total_matches: total,
     }
@@ -114,7 +113,6 @@ pub fn album_artists_children(
         didl: DidlOutput {
             containers,
             items: vec![],
-            nodes: vec![],
         },
         total_matches: total as usize,
     })
@@ -157,7 +155,6 @@ pub fn artists_children(ctx: &BrowseContext, start: usize, count: usize) -> Resu
         didl: DidlOutput {
             containers,
             items: vec![],
-            nodes: vec![],
         },
         total_matches: total as usize,
     })
@@ -186,7 +183,6 @@ pub fn albums_children(ctx: &BrowseContext, start: usize, count: usize) -> Resul
         didl: DidlOutput {
             containers,
             items: vec![],
-            nodes: vec![],
         },
         total_matches: total as usize,
     })
@@ -285,7 +281,6 @@ fn facet_children(
         didl: DidlOutput {
             containers,
             items: vec![],
-            nodes: vec![],
         },
         total_matches: total as usize,
     })
@@ -353,7 +348,6 @@ pub fn years_children(ctx: &BrowseContext, start: usize, count: usize) -> Result
         didl: DidlOutput {
             containers,
             items: vec![],
-            nodes: vec![],
         },
         total_matches: total,
     })
@@ -403,7 +397,6 @@ pub fn decades_children(ctx: &BrowseContext, start: usize, count: usize) -> Resu
         didl: DidlOutput {
             containers,
             items: vec![],
-            nodes: vec![],
         },
         total_matches: total,
     })
@@ -451,7 +444,6 @@ pub fn genres_children(ctx: &BrowseContext, start: usize, count: usize) -> Resul
         didl: DidlOutput {
             containers,
             items: vec![],
-            nodes: vec![],
         },
         total_matches: total,
     })

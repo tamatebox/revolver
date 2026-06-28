@@ -102,7 +102,6 @@ pub fn artist_tracks_children(
         didl: DidlOutput {
             containers: vec![],
             items,
-            nodes: vec![],
         },
         total_matches: total as usize,
     })

@@ -1062,23 +1062,36 @@ Album containers use `object.container.album.musicAlbum`.
 **For lossy formats (MP3 / AAC)**: omit `bitsPerSample`. Always include
 `bitrate`.
 
-### 7.2.1 Disc Divider (multi-disc albums only)
+### 7.2.1 Disc Folders (multi-disc albums only)
 
-A multi-disc album's child list includes `<container>` dividers
-interleaved between disc groups, so Linn (which doesn't render disc
-separation from `<upnp:originalDiscNumber>` alone) shows visual disc
-boundaries:
+A cleanly multi-disc album's direct children are per-disc `<container>`
+folders — **not** the tracks directly. The tracks live one level down,
+under each disc folder. This gives Linn (which doesn't render disc
+separation from `<upnp:originalDiscNumber>` alone) a visible disc grouping
+while keeping the album listing free of mixed item/container children:
 
 ```xml
 <container id="disc:{album_id}:{N}" parentID="alb:{album_id}"
            childCount="..." restricted="1">
-  <dc:title>>> Disc N</dc:title>
+  <dc:title>Disc N</dc:title>
   <upnp:class>object.container</upnp:class>
+  <upnp:albumArtURI>{art_base}/{album_id}</upnp:albumArtURI>
 </container>
 ```
 
-The divider's children resolve to that disc's tracks. Single-disc albums
-emit **no** divider.
+The folder's children (`disc:{album_id}:{N}` BrowseDirectChildren) resolve
+to that disc's tracks, ordered by track number, each carrying
+`<upnp:originalDiscNumber>`. Playing the album recurses every disc folder
+exactly once, so the full album queues continuously with no duplication;
+playing a single disc folder queues just that disc.
+
+A track `<item>` and a disc `<container>` are deliberately **never** mixed
+in one album listing: control points (verified on Linn) build a play queue
+by enqueuing a listing's items *and* recursing its child containers, so an
+interleaved layout double-queued every disc. "Cleanly multi-disc" means at
+least two distinct disc numbers **and** every track carries a positive
+disc tag; a single-disc album, or one with missing/inconsistent disc tags,
+emits the flat track-item list (§7.2) instead so no track is orphaned.
 
 ### 7.3 protocolInfo Mapping
 
@@ -1548,15 +1561,19 @@ quality_in_title_show_specs = true           # include numeric specs like "Hi-Re
     Search routes `upnp:artist[@role="..."]` to the matching column and
     returns the matching `cm:` / `cn:` / `pf:` containers.
 
-20. Multi-disc albums (`MAX(disc_num) > 1`) emit:
+20. Multi-disc albums (≥ 2 distinct disc numbers, every track tagged) emit:
     - `<upnp:originalDiscNumber>` on each track (for spec-compliant control
       points such as BubbleUPnP / JRiver), and
-    - **disc-divider containers** (`disc:{album_id}:{disc}` with title
-      `">> Disc N"`) interleaved between disc boundaries in the album's
-      child list, because Linn ignores `<upnp:originalDiscNumber>` in UI
-      rendering. The divider is itself a `<container>`; tapping it browses
-      the disc's tracks. MinimServer ships the same pattern (§7.2, §14).
-      Single-disc albums skip both — no divider, no `originalDiscNumber`.
+    - **per-disc folder containers** (`disc:{album_id}:{disc}` with title
+      `"Disc N"`) as the album's *direct children*, with the tracks one
+      level down under each folder, because Linn ignores
+      `<upnp:originalDiscNumber>` in UI rendering. A track `<item>` and a
+      disc `<container>` are never mixed in one album listing — control
+      points enqueue a listing's items *and* recurse its child containers,
+      so the older interleaved-divider layout double-queued every disc on
+      "play album" (§7.2.1). Single-disc albums — and albums with
+      missing/inconsistent disc tags — skip both: flat track list, no
+      `originalDiscNumber`.
 
 21. Year / Decade facets (#2). New nullable `tracks.year` column read via
     lofty (`Year` / `RecordingDate` → DATE / YEAR / TDRC / ©day, parsed
@@ -1651,24 +1668,27 @@ quality_in_title_show_specs = true           # include numeric specs like "Hi-Re
 - **Multi-disc albums**: identical `(effective_album_artist, album,
   compilation)` with different `disc_num` is automatically aggregated as a
   single album (the schema handles it). `ORDER BY disc_num, track_num`
-  produces the right order. When `MAX(disc_num) > 1` for that album, two
+  produces the right order. When the album is **cleanly multi-disc** (≥ 2
+  distinct disc numbers and every track carries a positive disc tag), two
   things happen: (1) `<upnp:originalDiscNumber>` is emitted on each track,
-  and (2) a `<container>` divider (`disc:{album_id}:{disc}`, title
-  `">> Disc N"`) is **interleaved between disc groups in the album's child
-  list**. The divider is the Linn fallback — Linn parses
-  `originalDiscNumber` but does not visually separate discs from it,
-  leaving disc-2 tracks looking like duplicates of disc-1 tracks. The
-  divider container is tappable; drilling in returns just that disc's
-  tracks (a redundant subset of the parent flat view, but it keeps
-  navigation coherent). Single-disc albums skip both — `dc:title` is
-  **never** modified for disc info, so single-disc browsing is unchanged.
-  When tags carry album names like `"Album [Disc 1]"`, the result is two
-  separate albums; fix this in tags. Automatic disc merging based on
-  parsed-out suffixes is **not implemented** (intentional — the parsing
-  rules are too lossy). Non-order-preserving control points (VLC,
-  foobar2000, MediaMonkey) may bunch the divider containers separately
-  from tracks; this is acceptable degradation since Linn is the primary
-  target and other CPs at least don't drop the response.
+  and (2) the album's **direct children are per-disc folder containers**
+  (`disc:{album_id}:{disc}`, title `"Disc N"`); the tracks live one level
+  down under each folder. The folders are the Linn fallback — Linn parses
+  `originalDiscNumber` but does not visually separate discs from it, leaving
+  disc-2 tracks looking like duplicates of disc-1 tracks. Crucially, a track
+  `<item>` and a disc `<container>` are **never mixed** in one album
+  listing: control points build a play queue by enqueuing a listing's items
+  *and* recursing into its child containers, so the older interleaved layout
+  enqueued every disc twice ("Disc 1 queued twice" on Linn). With pure disc
+  folders, "play album" recurses each disc once → continuous full-album play
+  with no duplication; "play Disc N" queues just that disc. Single-disc
+  albums — and albums with **missing or inconsistent disc tags** — emit the
+  flat track list instead (no folders, no `originalDiscNumber`), so a track
+  without a disc tag is never orphaned under a folder that never appears.
+  `dc:title` is **never** modified for disc info. When tags carry album
+  names like `"Album [Disc 1]"`, the result is two separate albums; fix this
+  in tags. Automatic disc merging based on parsed-out suffixes is **not
+  implemented** (intentional — the parsing rules are too lossy).
 - **DB cleanup on file deletion**: paths missing from the filesystem during a
   scan are deleted from `tracks`. File moves or renames also look like
   delete-then-insert, which resets `added_at` to "now" for those tracks.
