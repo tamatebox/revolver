@@ -43,6 +43,15 @@ pub struct Author {
     pub name: String,
 }
 
+/// Order-preserving DIDL child. Used when the response needs to interleave
+/// `<container>` and `<item>` elements (e.g. multi-disc album with disc-divider
+/// containers between track items). Container/Item-only responses can use the
+/// `build_didl(&[Container], &[Item])` form instead.
+pub enum DidlNode {
+    Container(Container),
+    Item(Item),
+}
+
 pub struct Resource {
     pub url: String,
     pub protocol_info: String,
@@ -63,6 +72,21 @@ pub fn build_didl(containers: &[Container], items: &[Item]) -> String {
     }
     for i in items {
         push_item(&mut s, i);
+    }
+    s.push_str(ENVELOPE_CLOSE);
+    s
+}
+
+/// Order-preserving variant: emits each node in the order given. Use when
+/// containers and items need to interleave (multi-disc dividers).
+pub fn build_didl_nodes(nodes: &[DidlNode]) -> String {
+    let mut s = String::new();
+    s.push_str(ENVELOPE_OPEN);
+    for n in nodes {
+        match n {
+            DidlNode::Container(c) => push_container(&mut s, c),
+            DidlNode::Item(i) => push_item(&mut s, i),
+        }
     }
     s.push_str(ENVELOPE_CLOSE);
     s

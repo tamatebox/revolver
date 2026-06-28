@@ -5,7 +5,7 @@ use rusqlite::params;
 
 use super::{BrowseContext, ChildrenResult, DidlOutput};
 use crate::error::{Error, Result};
-use crate::upnp::didl::{Author, Container, Item, Resource};
+use crate::upnp::didl::{Author, Container, DidlNode, Item, Resource};
 
 /// DB values for a single track row, as fetched by the `load_*` helpers.
 pub(crate) struct TrackRow {
@@ -39,83 +39,40 @@ pub fn track_metadata(ctx: &BrowseContext, track_id: i64) -> Result<DidlOutput> 
     Ok(DidlOutput {
         containers: vec![],
         items: vec![item],
+        nodes: vec![],
     })
 }
 
-/// Classifies an album's disc layout: returns `(folder_layout, distinct_discs)`
-/// where `folder_layout` is true iff the album is *cleanly* multi-disc (≥ 2
-/// distinct disc numbers AND every track carries a positive disc tag). Shared
-/// by [`album_tracks_children`] (what to list) and [`album_child_count`] (how
-/// many `alb:{id}` direct children to advertise) so the two never disagree.
-fn disc_layout(ctx: &BrowseContext, album_id: i64) -> Result<(bool, i64)> {
-    let (distinct_discs, missing): (i64, i64) = ctx.conn.query_row(
-        "SELECT COUNT(DISTINCT disc_num),
-                IFNULL(SUM(CASE WHEN disc_num IS NULL OR disc_num <= 0 THEN 1 ELSE 0 END), 0)
-         FROM tracks WHERE album_id = ?1",
-        params![album_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    Ok((distinct_discs >= 2 && missing == 0, distinct_discs))
-}
-
-/// Number of direct children `alb:{id}` exposes via BrowseDirectChildren: the
-/// per-disc folder count for a cleanly multi-disc album, otherwise the track
-/// count. Keeps `alb:{id}` BrowseMetadata `childCount` consistent with the
-/// [`album_tracks_children`] listing. `track_count` is the album's stored
-/// count, passed in to avoid a second query when the caller already has it.
-pub(crate) fn album_child_count(ctx: &BrowseContext, album_id: i64, track_count: i64) -> i64 {
-    match disc_layout(ctx, album_id) {
-        Ok((true, distinct_discs)) => distinct_discs,
-        _ => track_count,
-    }
-}
-
-/// BrowseDirectChildren (`alb:{id}`). On a cleanly multi-disc album the
-/// children are per-disc **containers** (`Disc 1` / `Disc 2` …); the tracks
-/// themselves live one level down under [`disc_tracks_children`]. Single-disc
-/// albums (and albums with inconsistent disc tags) return a flat track-item
-/// list instead.
-///
-/// The folder layout exists to fix a play-queue duplication bug: a track
-/// `<item>` and a disc `<container>` must never share one album listing.
-/// Control points (verified on Linn) build a play queue by enqueuing the
-/// listing's items *and* recursing into its child containers — when both sat
-/// in the album's direct children, every disc was enqueued twice (once as
-/// flat items, once via the divider container). Keeping tracks strictly under
-/// disc containers means "play album" recurses each disc exactly once.
-///
-/// "Cleanly multi-disc" = at least two distinct disc numbers AND every track
-/// carries a positive disc number. If any track lacks a disc tag we fall back
-/// to the flat list so no track is orphaned under a disc folder that never
-/// gets enumerated.
+/// BrowseDirectChildren (`alb:{id}`). Returns the album's children. On
+/// multi-disc albums (`MAX(disc_num) > 1`), disc-divider containers are
+/// interleaved at disc boundaries via `DidlOutput.nodes`. Single-disc
+/// albums take the simpler items-only path (no nodes), preserving the
+/// pre-multi-disc behavior.
 pub fn album_tracks_children(
     ctx: &BrowseContext,
     album_id: i64,
     start: usize,
     count: usize,
 ) -> Result<ChildrenResult> {
-    let (folder_layout, distinct_discs) = disc_layout(ctx, album_id)?;
-
-    if folder_layout {
-        let mut stmt = ctx.conn.prepare_cached(
-            "SELECT disc_num, COUNT(*) FROM tracks
-             WHERE album_id = ?1 AND disc_num IS NOT NULL AND disc_num > 0
-             GROUP BY disc_num ORDER BY disc_num
-             LIMIT ?2 OFFSET ?3",
-        )?;
-        let containers: Vec<Container> = stmt
-            .query_map(params![album_id, count as i64, start as i64], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
-            })?
-            .filter_map(|r| r.ok())
-            .map(|(disc, cnt)| build_disc_container(ctx, album_id, disc, Some(cnt)))
-            .collect();
+    let multi_disc: bool = ctx
+        .conn
+        .query_row(
+            "SELECT IFNULL(MAX(disc_num), 0) FROM tracks WHERE album_id = ?1",
+            params![album_id],
+            |r| r.get::<_, i64>(0).map(|n| n > 1),
+        )
+        .unwrap_or(false);
+    if multi_disc {
+        let all_nodes = load_multi_disc_album_nodes(ctx, album_id)?;
+        let total = all_nodes.len();
+        let nodes: Vec<DidlNode> = all_nodes.into_iter().skip(start).take(count).collect();
         Ok(ChildrenResult {
             didl: DidlOutput {
-                containers,
+                containers: vec![],
                 items: vec![],
+                nodes,
             },
-            total_matches: distinct_discs as usize,
+            total_matches: total,
         })
     } else {
         let total: i64 = ctx.conn.query_row(
@@ -128,45 +85,48 @@ pub fn album_tracks_children(
             didl: DidlOutput {
                 containers: vec![],
                 items,
+                nodes: vec![],
             },
             total_matches: total as usize,
         })
     }
 }
 
-/// BrowseMetadata (`disc:{album_id}:{disc}`). Returns the disc container
-/// metadata. Used when a control point asks "what is this object?" for a
-/// disc folder id.
+/// BrowseMetadata (`disc:{album_id}:{disc}`). Returns the disc-divider
+/// container metadata. Used when a control point asks "what is this object?"
+/// for a previously-cached divider id.
 pub fn disc_container(ctx: &BrowseContext, album_id: i64, disc: i64) -> Result<Container> {
     let child_count: i64 = ctx.conn.query_row(
         "SELECT COUNT(*) FROM tracks WHERE album_id = ?1 AND disc_num = ?2",
         params![album_id, disc],
         |r| r.get(0),
     )?;
-    Ok(build_disc_container(ctx, album_id, disc, Some(child_count)))
+    Ok(build_disc_divider(album_id, disc, Some(child_count)))
 }
 
-/// BrowseDirectChildren (`disc:{album_id}:{disc}`). Returns that disc's
-/// tracks — the leaf level of the multi-disc album hierarchy.
+/// BrowseDirectChildren (`disc:{album_id}:{disc}`). The disc divider is a
+/// **visual separator, not a navigable folder**, so it deliberately returns
+/// **no children**.
+///
+/// This is what fixes multi-disc play-queue duplication. A control point
+/// (verified on Linn) builds a play queue for an album by enqueuing the
+/// album listing's track `<item>`s *and* recursing into any child
+/// `<container>` it finds. The divider sits inline among the track items
+/// (see [`load_multi_disc_album_nodes`]); if it returned its disc's tracks
+/// here, every disc would be enqueued twice — once as the flat items, once
+/// via this recursion (the reported "Disc 1 queued twice"). Returning empty
+/// means "play album" recurses each divider to nothing, so each track queues
+/// exactly once while the separator still renders inline.
 pub fn disc_tracks_children(
-    ctx: &BrowseContext,
-    album_id: i64,
-    disc: i64,
-    start: usize,
-    count: usize,
+    _ctx: &BrowseContext,
+    _album_id: i64,
+    _disc: i64,
+    _start: usize,
+    _count: usize,
 ) -> Result<ChildrenResult> {
-    let total: i64 = ctx.conn.query_row(
-        "SELECT COUNT(*) FROM tracks WHERE album_id = ?1 AND disc_num = ?2",
-        params![album_id, disc],
-        |r| r.get(0),
-    )?;
-    let items = load_disc_tracks_paged(ctx, album_id, Some(disc), start, count)?;
     Ok(ChildrenResult {
-        didl: DidlOutput {
-            containers: vec![],
-            items,
-        },
-        total_matches: total as usize,
+        didl: DidlOutput::empty(),
+        total_matches: 0,
     })
 }
 
@@ -207,6 +167,75 @@ fn load_track_item(ctx: &BrowseContext, track_id: i64) -> Result<Item> {
         )
         .map_err(|e| Error::sqlite_or_not_found(e, "track", track_id))?;
     Ok(build_track_item(ctx, track_id, &row))
+}
+
+/// Loads every track row for the album and interleaves disc dividers
+/// (as `<container>` entries) at the disc boundaries. Caller has already
+/// determined `multi_disc = true`.
+fn load_multi_disc_album_nodes(ctx: &BrowseContext, album_id: i64) -> Result<Vec<DidlNode>> {
+    let mut stmt = ctx.conn.prepare_cached(
+        "SELECT t.id, t.album_id, t.title, t.artist, t.genre, t.track_num, t.disc_num,
+                t.duration_ms, t.sample_rate, t.bit_depth, t.channels,
+                t.bitrate, t.mime_type, t.file_size, a.album,
+                t.composer, t.conductor, t.performer
+         FROM tracks t JOIN albums a ON t.album_id = a.id
+         WHERE t.album_id = ?1
+         ORDER BY t.disc_num, t.track_num",
+    )?;
+    let rows: Vec<(i64, TrackRow)> = stmt
+        .query_map(params![album_id], |r| {
+            Ok((
+                r.get(0)?,
+                TrackRow {
+                    album_id: r.get(1)?,
+                    title: r.get(2)?,
+                    artist: r.get(3)?,
+                    genre: r.get(4)?,
+                    track_num: r.get(5)?,
+                    disc_num: r.get(6)?,
+                    multi_disc: true,
+                    duration_ms: r.get(7)?,
+                    sample_rate: r.get(8)?,
+                    bit_depth: r.get(9)?,
+                    channels: r.get(10)?,
+                    bitrate: r.get(11)?,
+                    mime_type: r.get(12)?,
+                    file_size: r.get(13)?,
+                    album: r.get(14)?,
+                    composer: r.get(15)?,
+                    conductor: r.get(16)?,
+                    performer: r.get(17)?,
+                },
+            ))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    // Pre-count per-disc children for the divider's `childCount` attribute.
+    let mut per_disc_count: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    for (_, row) in &rows {
+        if let Some(d) = row.disc_num.filter(|&n| n > 0) {
+            *per_disc_count.entry(d).or_default() += 1;
+        }
+    }
+
+    let mut nodes = Vec::with_capacity(rows.len() + 4);
+    let mut current_disc: Option<i64> = None;
+    for (id, row) in rows {
+        if let Some(d) = row.disc_num.filter(|&n| n > 0) {
+            if Some(d) != current_disc {
+                let child_count = per_disc_count.get(&d).copied();
+                nodes.push(DidlNode::Container(build_disc_divider(
+                    album_id,
+                    d,
+                    child_count,
+                )));
+                current_disc = Some(d);
+            }
+        }
+        nodes.push(DidlNode::Item(build_track_item(ctx, id, &row)));
+    }
+    Ok(nodes)
 }
 
 /// Loads tracks for an album with an optional disc filter. `disc = None`
@@ -340,27 +369,27 @@ pub(crate) fn build_track_item(ctx: &BrowseContext, track_id: i64, row: &TrackRo
     }
 }
 
-/// Per-disc sub-container under a multi-disc album. The album's direct
-/// children are these `Disc N` folders (never the tracks directly — see
-/// [`album_tracks_children`] for why mixing item + container in one album
-/// listing double-queues on play). Tapping a disc folder drills into
-/// [`disc_tracks_children`] for that disc's tracks. Carries the album cover as
-/// `<upnp:albumArtURI>` so the disc grid shows the sleeve rather than a blank
-/// folder icon.
-fn build_disc_container(
-    ctx: &BrowseContext,
-    album_id: i64,
-    disc: i64,
-    child_count: Option<i64>,
-) -> Container {
+/// Disc-divider container, injected into a multi-disc album's child list
+/// right before the first track of each disc. Renders as a separator row
+/// whose `dc:title` is `">> Disc N"`. MinimServer ships the same pattern
+/// (a `<container>` interleaved with track `<item>`s) and Linn renders it
+/// inline because Linn preserves the server's response order.
+///
+/// The divider is a **visual separator only** — its `disc:{album_id}:{disc}`
+/// id resolves to an empty child list (see [`disc_tracks_children`]), so a
+/// control point that recurses child containers while building a play queue
+/// adds nothing. `child_count` is carried purely as a display hint; it does
+/// **not** promise browsable children. This separation is what keeps
+/// "play album" from enqueuing each disc twice.
+fn build_disc_divider(album_id: i64, disc: i64, child_count: Option<i64>) -> Container {
     Container {
         id: format!("disc:{album_id}:{disc}"),
         parent_id: format!("alb:{album_id}"),
-        title: format!("Disc {disc}"),
+        title: format!(">> Disc {disc}"),
         upnp_class: "object.container",
         child_count,
         artist: None,
-        album_art_uri: Some(format!("{}/{}", ctx.art_base_url, album_id)),
+        album_art_uri: None,
     }
 }
 
@@ -444,6 +473,13 @@ mod tests {
         }
     }
 
+    fn node_title(n: &DidlNode) -> &str {
+        match n {
+            DidlNode::Container(c) => &c.title,
+            DidlNode::Item(i) => &i.title,
+        }
+    }
+
     #[test]
     fn bt1_single_disc_album_no_dividers_no_disc_number() {
         let conn = Connection::open_in_memory().unwrap();
@@ -457,11 +493,8 @@ mod tests {
         );
         let result = album_tracks_children(&ctx(&conn), album_id, 0, 100).unwrap();
         assert_eq!(result.total_matches, 3);
-        // Single-disc albums return track items directly (no disc folders).
-        assert!(
-            result.didl.containers.is_empty(),
-            "single-disc emitted disc folders"
-        );
+        // Single-disc albums skip the nodes path and return items directly.
+        assert!(result.didl.nodes.is_empty(), "single-disc emitted nodes");
         let titles: Vec<&str> = result.didl.items.iter().map(|i| i.title.as_str()).collect();
         assert_eq!(titles, vec!["First", "Second", "Third"]);
         for item in &result.didl.items {
@@ -473,10 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn bt2_multi_disc_album_children_are_disc_folders_not_tracks() {
-        // The core fix: a cleanly multi-disc album lists per-disc *containers*
-        // only. No track items sit at the album level, so a control point that
-        // enqueues items + recurses containers can't double-queue a disc.
+    fn bt2_multi_disc_album_injects_dividers_with_clean_titles() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         schema::migrate(&conn).unwrap();
@@ -487,96 +517,48 @@ mod tests {
             &[(1, 1, "D1T1"), (1, 2, "D1T2"), (2, 1, "D2T1")],
         );
         let result = album_tracks_children(&ctx(&conn), album_id, 0, 100).unwrap();
-        // 2 discs → 2 folders, and crucially zero items at the album level.
-        assert_eq!(result.total_matches, 2);
-        assert!(
-            result.didl.items.is_empty(),
-            "tracks must not sit beside disc folders"
+        // 3 tracks + 2 dividers (one before each disc)
+        assert_eq!(result.total_matches, 5);
+        let titles: Vec<&str> = result.didl.nodes.iter().map(node_title).collect();
+        assert_eq!(
+            titles,
+            vec![">> Disc 1", "D1T1", "D1T2", ">> Disc 2", "D2T1"]
         );
-        let titles: Vec<&str> = result
+        let kinds: Vec<&'static str> = result
             .didl
-            .containers
+            .nodes
             .iter()
-            .map(|c| c.title.as_str())
-            .collect();
-        assert_eq!(titles, vec!["Disc 1", "Disc 2"]);
-        // Folder ids drill into the disc leaf; childCount reflects per-disc tracks.
-        let ids: Vec<&str> = result
-            .didl
-            .containers
-            .iter()
-            .map(|c| c.id.as_str())
+            .map(|n| match n {
+                DidlNode::Container(_) => "container",
+                DidlNode::Item(_) => "item",
+            })
             .collect();
         assert_eq!(
-            ids,
-            vec![
-                &format!("disc:{album_id}:1")[..],
-                &format!("disc:{album_id}:2")[..]
-            ]
+            kinds,
+            vec!["container", "item", "item", "container", "item"]
         );
+        // Disc-1 divider points at 2 children, disc-2 divider at 1.
         let child_counts: Vec<Option<i64>> = result
             .didl
-            .containers
+            .nodes
             .iter()
-            .map(|c| c.child_count)
+            .filter_map(|n| match n {
+                DidlNode::Container(c) => Some(c.child_count),
+                _ => None,
+            })
             .collect();
         assert_eq!(child_counts, vec![Some(2), Some(1)]);
-    }
-
-    #[test]
-    fn bt2b_album_with_missing_disc_tags_falls_back_to_flat_list() {
-        // Inconsistent disc tags (one track has no disc) → flat track list, not
-        // disc folders, so the untagged track is never orphaned.
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-        schema::migrate(&conn).unwrap();
-        let album_id = seed(
-            &conn,
-            "A",
-            "Patchy",
-            &[(1, 1, "Tagged1"), (2, 1, "Tagged2"), (0, 2, "Untagged")],
-        );
-        let result = album_tracks_children(&ctx(&conn), album_id, 0, 100).unwrap();
-        assert!(
-            result.didl.containers.is_empty(),
-            "patchy disc tags must not produce folders"
-        );
-        assert_eq!(result.total_matches, 3);
-        assert_eq!(result.didl.items.len(), 3);
-    }
-
-    #[test]
-    fn bt2c_album_child_count_matches_direct_children() {
-        // BrowseMetadata childCount must equal BrowseDirectChildren totalMatches
-        // for the same album object: disc-folder count when multi-disc, track
-        // count when single-disc.
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-        schema::migrate(&conn).unwrap();
-
-        let multi = seed(
-            &conn,
-            "A",
-            "Multi",
-            &[(1, 1, "D1T1"), (1, 2, "D1T2"), (2, 1, "D2T1")],
-        );
-        // 3 tracks across 2 discs → childCount is 2 (folders), not 3 (tracks).
-        assert_eq!(album_child_count(&ctx(&conn), multi, 3), 2);
-        assert_eq!(
-            album_tracks_children(&ctx(&conn), multi, 0, 100)
-                .unwrap()
-                .total_matches,
-            2
-        );
-
-        let single = seed(&conn, "B", "Single", &[(1, 1, "S1"), (1, 2, "S2")]);
-        assert_eq!(album_child_count(&ctx(&conn), single, 2), 2);
-        assert_eq!(
-            album_tracks_children(&ctx(&conn), single, 0, 100)
-                .unwrap()
-                .total_matches,
-            2
-        );
+        // originalDiscNumber emitted on tracks (multi-disc).
+        let discs: Vec<Option<u32>> = result
+            .didl
+            .nodes
+            .iter()
+            .filter_map(|n| match n {
+                DidlNode::Item(i) => Some(i.original_disc_number),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(discs, vec![Some(1), Some(1), Some(2)]);
     }
 
     #[test]
@@ -599,9 +581,9 @@ mod tests {
     }
 
     #[test]
-    fn bt4_disc_folder_pagination() {
-        // Disc folders paginate like any other container list: total_matches is
-        // the disc count, and start/count slice the folder list.
+    fn bt4_multi_disc_pagination_spans_divider() {
+        // Page boundary lands on a divider — make sure pagination doesn't drop
+        // or duplicate elements.
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         schema::migrate(&conn).unwrap();
@@ -609,21 +591,20 @@ mod tests {
             &conn,
             "A",
             "Multi",
-            &[(1, 1, "A1"), (2, 1, "B1"), (3, 1, "C1")],
+            &[(1, 1, "A1"), (1, 2, "A2"), (2, 1, "B1"), (2, 2, "B2")],
         );
-        let result = album_tracks_children(&ctx(&conn), album_id, 1, 1).unwrap();
-        assert_eq!(result.total_matches, 3);
-        let titles: Vec<&str> = result
-            .didl
-            .containers
-            .iter()
-            .map(|c| c.title.as_str())
-            .collect();
-        assert_eq!(titles, vec!["Disc 2"]);
+        // Full list: ">> Disc 1", "A1", "A2", ">> Disc 2", "B1", "B2"  (6 nodes)
+        let result = album_tracks_children(&ctx(&conn), album_id, 2, 2).unwrap();
+        assert_eq!(result.total_matches, 6);
+        let titles: Vec<&str> = result.didl.nodes.iter().map(node_title).collect();
+        assert_eq!(titles, vec!["A2", ">> Disc 2"]);
     }
 
     #[test]
-    fn bt5_disc_tracks_children_returns_only_that_disc() {
+    fn bt5_disc_divider_has_no_children_so_play_album_cannot_double() {
+        // The divider is a visual separator only: browsing it returns nothing,
+        // so a control point recursing child containers when building a play
+        // queue can't re-enqueue the disc's tracks ("Disc 1 queued twice").
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         schema::migrate(&conn).unwrap();
@@ -634,12 +615,8 @@ mod tests {
             &[(1, 1, "A1"), (1, 2, "A2"), (2, 1, "B1"), (2, 2, "B2")],
         );
         let result = disc_tracks_children(&ctx(&conn), album_id, 2, 0, 100).unwrap();
-        assert_eq!(result.total_matches, 2);
-        let titles: Vec<&str> = result.didl.items.iter().map(|i| i.title.as_str()).collect();
-        assert_eq!(titles, vec!["B1", "B2"]);
-        // Leaf tracks of a multi-disc album carry originalDiscNumber.
-        for item in &result.didl.items {
-            assert_eq!(item.original_disc_number, Some(2));
-        }
+        assert_eq!(result.total_matches, 0);
+        assert!(result.didl.items.is_empty());
+        assert!(result.didl.containers.is_empty());
     }
 }

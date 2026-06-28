@@ -11,7 +11,7 @@ use rusqlite::Connection;
 use crate::error::Result;
 use crate::random::RandomState;
 use crate::state::BrowseSettings;
-use crate::upnp::didl::Container;
+use crate::upnp::didl::{Container, DidlNode};
 use crate::upnp::object_id::ObjectId;
 
 pub mod albums;
@@ -30,6 +30,12 @@ pub(crate) mod test_helpers;
 pub struct DidlOutput {
     pub containers: Vec<Container>,
     pub items: Vec<crate::upnp::didl::Item>,
+    /// Order-preserving alternative to `containers`/`items`. When non-empty,
+    /// the SOAP layer emits these in order (interleaving `<container>` and
+    /// `<item>`) and **ignores** the separated `containers`/`items` fields.
+    /// Used by multi-disc album browse so disc-divider containers can sit
+    /// between track items.
+    pub nodes: Vec<DidlNode>,
 }
 
 impl DidlOutput {
@@ -37,6 +43,7 @@ impl DidlOutput {
         Self {
             containers: vec![],
             items: vec![],
+            nodes: vec![],
         }
     }
 }
@@ -171,6 +178,7 @@ pub(crate) fn single(c: Container) -> DidlOutput {
     DidlOutput {
         containers: vec![c],
         items: vec![],
+        nodes: vec![],
     }
 }
 

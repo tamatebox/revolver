@@ -27,9 +27,15 @@ const CD_SERVICE_TYPE: &str = "urn:schemas-upnp-org:service:ContentDirectory:1";
 /// Upper bound when `RequestedCount = 0` (all results) (SPEC §6.5).
 const MAX_REQUESTED_COUNT: usize = 1000;
 
-/// Count of child elements in a `DidlOutput`.
+/// Count of child elements in a `DidlOutput`. When `nodes` is non-empty it
+/// is the authoritative source (ordered Container/Item interleave for
+/// multi-disc albums); otherwise fall back to `containers.len() + items.len()`.
 fn didl_count(output: &DidlOutput) -> usize {
-    output.containers.len() + output.items.len()
+    if !output.nodes.is_empty() {
+        output.nodes.len()
+    } else {
+        output.containers.len() + output.items.len()
+    }
 }
 
 pub fn handle(
@@ -136,7 +142,11 @@ fn handle_browse(
         _ => return Err(soap::SoapFault::invalid_args()),
     };
 
-    let didl_xml = didl::build_didl(&output.containers, &output.items);
+    let didl_xml = if !output.nodes.is_empty() {
+        didl::build_didl_nodes(&output.nodes)
+    } else {
+        didl::build_didl(&output.containers, &output.items)
+    };
     Ok(soap::build_response_body(
         "Browse",
         CD_SERVICE_TYPE,
