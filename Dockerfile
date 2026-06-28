@@ -4,28 +4,26 @@
 FROM rust:1-bookworm AS builder
 WORKDIR /usr/src/revolver
 
-# Cache dependencies first by building against a dummy main.rs.
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && echo "fn main() {}" > src/main.rs && \
-    cargo build --release && \
-    rm -rf src target/release/revolver target/release/deps/revolver-*
-
-# Build the actual binary.
 COPY src ./src
-COPY tests ./tests
 COPY assets ./assets
-RUN touch src/main.rs && cargo build --release
 
-# Runtime stage
-FROM debian:bookworm-slim AS runtime
+# Cache the cargo registry and target dir across builds so a source-only
+# rebuild only recompiles changed modules instead of the whole dep graph.
+# target/ lives in a cache mount (not committed to the layer), so copy the
+# finished binary out to a plain path for the runtime stage to grab.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/src/revolver/target \
+    cargo build --release && \
+    cp target/release/revolver /usr/local/bin/revolver
 
-# ca-certificates only — SQLite is bundled, reqwest is built without TLS,
-# and tag reading does not need any system libraries.
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+# Runtime stage — distroless: glibc + ca-certificates only, no shell / apt /
+# perl, so the OS-package CVE surface shrinks to ~zero vs debian:bookworm-slim.
+# Matches the bookworm (glibc 2.36) toolchain the binary is built against.
+# SQLite is bundled, reqwest is built without TLS, tag reading needs no libs.
+FROM gcr.io/distroless/cc-debian12 AS runtime
 
-COPY --from=builder /usr/src/revolver/target/release/revolver /usr/local/bin/revolver
+COPY --from=builder /usr/local/bin/revolver /usr/local/bin/revolver
 
 # SSDP requires host networking; these EXPOSE lines are documentation only.
 EXPOSE 8200/tcp
