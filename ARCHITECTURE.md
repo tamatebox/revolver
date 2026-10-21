@@ -78,7 +78,12 @@ src/
 │   │                        (SPEC §3.2, §4.2)
 │   ├── progress.rs       Lock-free `ScanProgress` snapshot (#12). Powers
 │   │                        `/admin/scan-progress`.
-│   └── report.rs         `ScanReport` struct and JSON serialization (SPEC §4.7)
+│   ├── report.rs         `ScanReport` struct and JSON serialization (SPEC §4.7)
+│   ├── trigger.rs        `spawn_detached`: the one scan launcher shared by
+│   │                        startup, `POST /admin/rescan`, and the watcher
+│   │                        (scan + SystemUpdateID NOTIFY + Random reshuffle).
+│   └── watch.rs          inotify watch → event filter → debounce → full
+│                            rescan (#30, SPEC §4.4).
 │
 ├── art/                  # ─── Album art extraction + cache (SPEC §8.3) ─
 │   ├── mod.rs
@@ -320,7 +325,11 @@ scan is already in flight.
 
 The **startup scan** (when `scan.on_startup = true`) takes the same shape
 (#15): `main` acquires the `scan_lock` permit, then detaches the scan via
-`tokio::spawn` before binding the HTTP listener. As a result, every admin
+`tokio::spawn` before binding the HTTP listener. The **filesystem watcher**
+(#30, `scan.watch`) is the third trigger: after the debounce it waits for
+the permit (rather than returning 409) and starts the same detached task.
+All three call `scan::trigger::spawn_detached`, so the post-scan side
+effects cannot drift between trigger paths. As a result, every admin
 endpoint — including `/admin/scan-progress`, which exists to surface this
 very scan — is reachable while the initial scan is in progress. Shutdown
 still waits on `scan_lock.acquire().await`, so WAL safety on Ctrl-C is
@@ -626,10 +635,12 @@ views default to flat — avoid sub-container cascades (see CLAUDE.md).
 | `scan` | `scan::run` (`#[instrument]`) | `scan_id`, `root` |
 | `startup_scan` | wraps the `tokio::spawn` that detaches the startup scan in `main` | parent for the inner `scan` span |
 | `rescan` | wraps the `tokio::spawn` that detaches the `POST /admin/rescan` task | `scan_id`; parent for the inner `scan` span |
+| `fs_watch` | the long-lived watcher task in `scan/watch::spawn` (#30) | — |
+| `watch_scan` | wraps the detached scan started by the watcher | `scan_id`; parent for the inner `scan` span |
 | `gena.notify` | per-target NOTIFY future inside `upnp/gena::broadcast_propchange` | `sid`, `service` |
 | `gena.initial_notify` | post-`SUBSCRIBE` NOTIFY future inside `upnp/gena::spawn_initial_notify` | `sid` |
 
-`scan_id` is **caller-owned**: `main` generates it for the startup scan, `POST /admin/rescan` generates it before returning `{ scan_id, started_at }`, and both pass it to `scan::run`. So the value in the rescan response body, the value persisted to `last_scan_report`, and the value tagged on every scan log line are all the same string.
+`scan_id` is **caller-owned**: `main` generates it for the startup scan, `POST /admin/rescan` generates it before returning `{ scan_id, started_at }`, the watcher generates it when its debounce fires, and all pass it to `scan::run`. So the value in the rescan response body, the value persisted to `last_scan_report`, and the value tagged on every scan log line are all the same string.
 
 ### Log levels
 
@@ -654,7 +665,8 @@ Top-level tasks spawned from `main.rs`:
 | SSDP listener | Listens on UDP port 1900, responds to `M-SEARCH` (`ssdp.rs`) | broadcast shutdown |
 | SSDP advertiser | `ssdp:alive` on startup, periodic re-announce, `ssdp:byebye` on exit (`ssdp.rs`) | broadcast shutdown (sends byebye first) |
 | GENA sweep | Drops expired subscriptions every 60s | broadcast shutdown |
-| Scan worker | Triggered on startup (`scan.on_startup`, #15) and from `POST /admin/rescan` (#18). Both paths detach via `tokio::spawn` so HTTP bind is never blocked behind the scan. Rayon runs inside `spawn_blocking`. Re-entry is blocked by `tokio::sync::Semaphore::new(1)` | Shutdown awaits `scan_lock.acquire()` to prevent WAL truncation mid-scan |
+| FS watcher | `scan.watch` (#30). `notify` callback thread → capacity-1 mpsc → debounce loop → waits on `scan_lock` → detached scan. Watch registration runs in `spawn_blocking`; setup failure logs `warn` and exits | broadcast shutdown (wins over waiting for the permit) |
+| Scan worker | Triggered on startup (`scan.on_startup`, #15), from `POST /admin/rescan` (#18), and by the FS watcher (#30). All paths detach via `scan::trigger::spawn_detached` so HTTP bind is never blocked behind the scan. Rayon runs inside `spawn_blocking`. Re-entry is blocked by `tokio::sync::Semaphore::new(1)` | Shutdown awaits `scan_lock.acquire()` to prevent WAL truncation mid-scan |
 | NOTIFY senders (many) | Short-lived tasks spawned per `broadcast_propchange`. Tracked in `AppState.notify_tasks` and aborted on shutdown | Aborted on shutdown |
 
 Shutdown is signaled by `tokio::signal::ctrl_c()` firing

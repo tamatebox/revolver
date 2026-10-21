@@ -20,6 +20,11 @@ extensions = ["flac", "wav", "aiff", "aif", "m4a", "mp3"]
 [scan]
 on_startup = true
 parallel   = 8  # rayon thread count for tag reading
+# Rescan automatically after library changes settle (inotify; local disks only —
+# SMB / NFS mounts deliver no events, use POST /admin/rescan there).
+watch               = true
+watch_debounce_secs = 10   # quiet period after the last change
+watch_max_wait_secs = 300  # rescan anyway if changes never stop for this long
 
 [browse]
 # Runtime-tunable browse settings (top-level facet order, Recently Added /

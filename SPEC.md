@@ -42,7 +42,8 @@ A simple UPnP/DLNA MediaServer for personal music libraries.
 | Transcoding | Not planned. Files are served as-is. |
 | Multiple libraries | Not planned. One root directory. |
 | Tag editing | Not planned. Read-only. |
-| In-process FS watching / periodic rescan | Not planned. Delegated to `systemd.timer` / `cron` / rsync post-hook via `POST /admin/rescan` (§4.4). |
+| In-process FS watching | Implemented (#30, §4.4): inotify watch → debounced full rescan. No NAS detection / polling fallback. |
+| In-process periodic rescan | Not planned. Delegated to `systemd.timer` / `cron` via `POST /admin/rescan` (§4.4). |
 | Genre cleanup / tag normalization | Not planned. Tag values are used as-is. |
 | Composer / Conductor / Orchestra facet | Implemented (§6.2, #9). |
 | Year / Decade facet | Implemented (§6.2, #2). |
@@ -321,17 +322,45 @@ ON CONFLICT(path) DO UPDATE SET
 
 ### 4.4 Scan Triggers
 
-revolver itself exposes exactly two trigger paths:
+revolver itself exposes three trigger paths, all launching the same detached
+scan (`scan::trigger::spawn_detached`) serialized by the `scan_lock`
+semaphore:
 
 - At server startup (initial run, or when `on_startup = true`).
-- Manual via `POST /admin/rescan` (#18, async 202).
+- Manual via `POST /admin/rescan` (#18, async 202; 409 if a scan is in flight).
+- Filesystem watch (#30, `scan.watch`, default on).
 
-**Periodic / event-driven triggering is delegated to the host environment.**
-Filesystem watching (`notify` / `inotify` / `FSEvents`), NAS auto-detection,
-and periodic loops are deliberately *not* implemented in-process — they
-duplicate facilities every modern OS already provides (`systemd.timer`,
-`cron`, `launchd`), and the rsync-completion case has no need for watching
-at all. The recommended patterns:
+**Filesystem watch.** `library.root` is watched recursively via `notify`
+(inotify on Linux; directories created later are added automatically).
+Any relevant change re-runs the **full** scan — not an incremental
+per-album update; the mtime skip (§4.5) keeps an unchanged rescan cheap.
+
+- *Filter*: only create / remove / rename / data-write events whose path is
+  a configured audio extension or a directory pass. Access events (open,
+  read, close-nowrite) and metadata-only changes are dropped — the scan
+  itself opens every changed file, so accepting them would make each scan
+  trigger the next. Hidden paths below the root are ignored, matching the
+  walker (§4.8; also covers rsync's `.name.XXXXXX` temp files). A kernel
+  queue overflow or watcher error forces a rescan.
+- *Debounce*: trailing quiet period `watch_debounce_secs` (default 10 s),
+  capped at `watch_max_wait_secs` (default 300 s) from the first pending
+  event so a never-quiet stream still scans. A long continuous copy re-arms
+  the timer and never triggers mid-copy; if a half-written file is read
+  anyway, its final write bumps mtime and the next scan re-reads it.
+- *Coalescing*: when the debounce fires during an in-flight scan, the
+  watcher waits for the permit. Changes arriving meanwhile produce exactly
+  one follow-up scan.
+- *Failure*: if the watch cannot be set up (unsupported FS, inotify watch
+  limit — raise `fs.inotify.max_user_watches`), a `warn` is logged and the
+  server runs on without it.
+- *Network mounts*: SMB / NFS usually deliver no events, so the watcher is
+  silently inert there. No NAS detection or polling fallback is implemented
+  (the larger #7 scope was rejected); use the external patterns below, or
+  run revolver on the NAS itself so the library is a local filesystem.
+
+**External triggers** remain the answer for network mounts and for a
+periodic safety net. Periodic in-process rescanning is deliberately not
+implemented — it duplicates `systemd.timer` / `cron` / `launchd`:
 
 | Scenario | Pattern |
 |---|---|
@@ -1500,10 +1529,13 @@ extensions = ["flac", "wav", "aiff", "aif", "m4a", "mp3"]
 [scan]
 on_startup = true
 parallel = 8  # rayon thread count
+watch = true                # rescan after library changes settle (§4.4, #30)
+watch_debounce_secs = 10    # quiet period after the last change
+watch_max_wait_secs = 300   # cap for a never-quiet stream of changes
 
-# Periodic / event-driven re-scanning is intentionally not configured here.
-# Wire up `systemd.timer`, `cron`, or an rsync post-hook against
-# `POST /admin/rescan` instead — see README "Triggering rescans externally"
+# Periodic re-scanning is intentionally not configured here. For network
+# mounts (no inotify events) wire up `systemd.timer`, `cron`, or an rsync
+# post-hook against `POST /admin/rescan` — see README "Triggering rescans"
 # and §4.4.
 
 [browse]

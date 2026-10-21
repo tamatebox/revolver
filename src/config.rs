@@ -55,6 +55,28 @@ pub struct Library {
 pub struct Scan {
     pub on_startup: bool,
     pub parallel: usize,
+    /// Watch `library.root` and rescan after changes settle (#30, SPEC §4.4).
+    /// Silently inert on network mounts that deliver no inotify events.
+    #[serde(default = "default_watch")]
+    pub watch: bool,
+    /// Quiet period after the last relevant change before the rescan starts.
+    #[serde(default = "default_watch_debounce_secs")]
+    pub watch_debounce_secs: u64,
+    /// Cap on how long a continuous stream of changes can postpone the rescan.
+    #[serde(default = "default_watch_max_wait_secs")]
+    pub watch_max_wait_secs: u64,
+}
+
+fn default_watch() -> bool {
+    true
+}
+
+fn default_watch_debounce_secs() -> u64 {
+    10
+}
+
+fn default_watch_max_wait_secs() -> u64 {
+    300
 }
 
 /// `[search]` section (#28). Toggles typo-tolerant FTS5 trigram matching on
