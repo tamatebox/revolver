@@ -20,6 +20,7 @@ Single binary, SQLite-backed, LAN-only.
 - **All tracks by X** — every Artist container (`aa:{X}` / `ar:{X}`) exposes an "All tracks (N)" virtual child that plays the artist's contributions across all albums in a single flat list — perfect for guest spots scattered across compilations.
 - **HTTP streaming with Range Request** — Strict support for all Range forms (`bytes=N-M`, `N-`, `-N` suffix). Gapless playback works.
 - **Album art** — Embedded artwork first, then folder images (`cover.*` / `folder.*` / `front.*` / etc., case-insensitive). On-demand extraction with a small in-memory cache.
+- **Automatic rescan** — Watches the library folder and rescans about 10 s after changes settle, so new or re-tagged files appear without a manual step (local disks; SMB / NFS need an external trigger — see [Triggering rescans](#triggering-rescans)).
 - **GENA events** — `SUBSCRIBE` / `NOTIFY` with `SystemUpdateID` auto-increment, so control points refresh automatically after rescans.
 - **Web admin UI** — Single-page UI at `/` with scan trigger, reshuffle, live stats, in-flight scan progress, and runtime settings editor (backed by a REST config API). No external dependencies.
 
@@ -107,9 +108,20 @@ RUST_LOG=revolver=debug ./revolver                # verbose
 
 Each request and background task is wrapped in a named span (`cd.browse` / `cd.search` / `stream` / `scan` / `rescan` / `gena.notify` / ...), so nested logs carry the relevant `object_id` / `track_id` / `scan_id` / `sid` field automatically. See [`ARCHITECTURE.md`](ARCHITECTURE.md) §3 for the full span / level reference.
 
-## Triggering rescans externally
+## Triggering rescans
 
-revolver intentionally has no in-process filesystem watcher or periodic-rescan loop — every modern host already ships a scheduler, and the rsync-completion case doesn't need watching at all. Wire whichever you prefer to `POST /admin/rescan` (returns 202 immediately; serialized through a semaphore so concurrent calls are safe — extras get 409 and can be ignored).
+**Automatic (default).** revolver watches `library.root` and rescans about 10 seconds after changes stop — copy an album in, fix a tag, or delete a folder, and it shows up without any manual step. Tune or disable it under `[scan]`:
+
+```toml
+[scan]
+watch = true                # set false to rely on manual / external triggers only
+watch_debounce_secs = 10    # quiet period after the last change
+watch_max_wait_secs = 300   # rescan anyway if changes never stop for this long
+```
+
+The watch relies on inotify, so it works on local disks (including Docker bind mounts of a local disk). **SMB / NFS mounts usually deliver no events** — on those, the watcher stays silent and you should use one of the external triggers below (or run revolver on the NAS itself). If the log says the watch is unavailable on a very large tree, raise `fs.inotify.max_user_watches`.
+
+**External triggers.** Wire whichever you prefer to `POST /admin/rescan` (returns 202 immediately; serialized through a semaphore so concurrent calls are safe — extras get 409 and can be ignored). There is intentionally no periodic-rescan loop in-process — every host already ships a scheduler.
 
 **rsync post-hook (instant, recommended when you control the sync):**
 

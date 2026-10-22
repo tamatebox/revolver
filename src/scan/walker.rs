@@ -60,6 +60,20 @@ impl SkipReason {
     }
 }
 
+/// True when `path`'s extension is one of the configured audio `extensions`
+/// (case-insensitive). Shared with the filesystem watcher (#30) so both agree
+/// on what counts as a library file.
+pub(crate) fn has_audio_extension(path: &Path, extensions: &[String]) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| {
+            extensions
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(e))
+        })
+        .unwrap_or(false)
+}
+
 /// Recursively enumerate `root` and push audio files matching `extensions`
 /// (no leading dot) into `audio_files`. Hidden entries (starting with `.`),
 /// both files and directories, are pruned and not emitted in the scan
@@ -95,15 +109,8 @@ pub fn walk(root: &Path, extensions: &[String]) -> WalkResult {
         let path = entry.path();
 
         let ext_opt = path.extension().and_then(|e| e.to_str());
-        let ext_match = ext_opt
-            .map(|e| {
-                extensions
-                    .iter()
-                    .any(|allowed| allowed.eq_ignore_ascii_case(e))
-            })
-            .unwrap_or(false);
 
-        if !ext_match {
+        if !has_audio_extension(path, extensions) {
             // Companion files (album art / logs / playlists) collapse into a counter
             // so the `skipped` list highlights actionable issues only (#19).
             if ext_opt.map(is_companion_extension).unwrap_or(false) {

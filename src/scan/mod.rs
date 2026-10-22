@@ -18,7 +18,9 @@ pub mod matcher;
 pub mod progress;
 pub mod report;
 pub mod tagger;
+pub mod trigger;
 pub mod walker;
+pub mod watch;
 
 /// Per-path pre-processing result (FS metadata already fetched).
 struct EnumeratedTrack {
