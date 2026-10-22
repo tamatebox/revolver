@@ -6,7 +6,8 @@
 
 use std::collections::HashMap;
 
-use quick_xml::events::Event;
+use quick_xml::escape::resolve_predefined_entity;
+use quick_xml::events::{BytesRef, Event};
 use quick_xml::Reader;
 
 use crate::upnp::xml::escape_text as xml_escape;
@@ -21,8 +22,12 @@ pub struct SoapRequest {
 
 /// Parse a SOAP envelope. Returns `None` if malformed.
 pub fn parse_envelope(body: &str) -> Option<SoapRequest> {
+    // No `trim_text`: since quick-xml 0.38 an argument's text arrives split
+    // around each entity reference (`Text` / `GeneralRef` / `Text`), so
+    // per-event trimming would eat the spaces in
+    // `dc:title contains &quot;The Beatles&quot;`. The assembled value is
+    // trimmed once at `End` instead.
     let mut reader = Reader::from_str(body);
-    reader.config_mut().trim_text(true);
 
     let mut depth: i32 = 0;
     let mut body_depth: Option<i32> = None;
@@ -69,13 +74,19 @@ pub fn parse_envelope(body: &str) -> Option<SoapRequest> {
                 }
             }
             Ok(Event::Text(t)) if current_arg.is_some() => {
-                if let Ok(text) = t.unescape() {
+                if let Ok(text) = t.xml10_content() {
                     current_text.push_str(&text);
+                }
+            }
+            Ok(Event::GeneralRef(r)) if current_arg.is_some() => {
+                if let Some(resolved) = resolve_ref(&r) {
+                    current_text.push_str(&resolved);
                 }
             }
             Ok(Event::End(_)) => {
                 if let Some(arg) = current_arg.take() {
-                    args.insert(arg, std::mem::take(&mut current_text));
+                    args.insert(arg, current_text.trim().to_string());
+                    current_text.clear();
                 }
                 depth -= 1;
             }
@@ -86,6 +97,16 @@ pub fn parse_envelope(body: &str) -> Option<SoapRequest> {
     }
 
     action.map(|a| SoapRequest { action: a, args })
+}
+
+/// Resolve `&#NN;` / `&#xNN;` and the five predefined XML entities. Unknown
+/// entities (no DTD is honored) resolve to nothing.
+fn resolve_ref(r: &BytesRef<'_>) -> Option<String> {
+    if let Ok(Some(c)) = r.resolve_char_ref() {
+        return Some(c.to_string());
+    }
+    let name = r.decode().ok()?;
+    resolve_predefined_entity(&name).map(str::to_string)
 }
 
 /// Build the SOAP body for a successful response. `args` values are auto XML-escaped.
@@ -217,6 +238,29 @@ mod tests {
     }
 
     #[test]
+    fn sp4_entities_in_args_are_resolved_and_inner_spaces_kept() {
+        // Linn's SearchCriteria arrives entity-escaped; the spaces next to
+        // `&quot;` must survive (quick-xml ≥ 0.38 splits text around refs).
+        let body = r#"<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body>
+    <u:Search xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">
+      <SearchCriteria> upnp:class derivedfrom &quot;object.container.album&quot; and dc:title contains &quot;Rock &amp; Roll&quot; </SearchCriteria>
+      <Filter>&#x41;&#66;&lt;&gt;&apos;&unknown;</Filter>
+    </u:Search>
+  </s:Body>
+</s:Envelope>"#;
+        let req = parse_envelope(body).expect("must parse");
+        assert_eq!(
+            req.args.get("SearchCriteria").map(String::as_str),
+            Some(
+                r#"upnp:class derivedfrom "object.container.album" and dc:title contains "Rock & Roll""#
+            )
+        );
+        assert_eq!(req.args.get("Filter").map(String::as_str), Some("AB<>'"));
+    }
+
+    #[test]
     fn sp3_build_response_body_escapes_values() {
         let body = build_response_body(
             "Browse",
@@ -233,7 +277,7 @@ mod tests {
     proptest::proptest! {
         /// Any UTF-8-valid byte sequence passed to parse_envelope must not panic
         /// and must return `None`/`Some`. XXE / billion laughs are deferred to
-        /// quick-xml 0.36's default behavior (DTDs are ignored).
+        /// quick-xml's default behavior (DTDs are ignored).
         #[test]
         fn sp_parse_envelope_never_panics(input in ".*") {
             let _ = parse_envelope(&input);
