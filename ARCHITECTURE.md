@@ -66,6 +66,9 @@ src/
 │   ├── walker.rs         walkdir-based enumeration with extension / hidden-file filtering
 │   │                        (SPEC §4.8)
 │   ├── tagger.rs         lofty-based tag + codec + audio-properties reader.
+│   │                        Tiered read (#35): default → `Relaxed` →
+│   │                        properties-only + path-derived metadata
+│   │                        (`TagFidelity` on `TrackTags`).
 │   │                        Reads composer / conductor / performer (#9), release
 │   │                        year (#2, `parse_year`), ReplayGain track / album
 │   │                        gain & peak (#11, `parse_rg` handles "-7.34 dB" /

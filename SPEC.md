@@ -240,7 +240,15 @@ the scan report.
    are skipped and recorded with a reason in the scan report (§4.7).
 3. Read tags in parallel via `rayon` (`lofty`). **For M4A containers,
    determine whether the codec is ALAC or AAC** from lofty's codec info and
-   save it to the `codec` column.
+   save it to the `codec` column. A malformed tag block does not drop the
+   track (#35): the read is retried with `ParsingMode::Relaxed` (drops the
+   bad fields, e.g. a TDRC of `"1997, 2016"`), then properties-only with
+   title / track / disc / album / artist taken from an `Artist/Album/NN
+   Title.ext` path (an iTunes-style `Compilations/` folder sets the
+   compilation flag instead of an artist). Only files whose audio
+   properties are unreadable too (e.g. an MP4 without `moov`) count as
+   `tag_read_failed`. Recovered tracks are stored with their mtime, so the
+   §4.5 skip stops them from being re-read and re-logged every scan.
 4. For each track, compute `effective_album_artist` (§3.2).
 5. Upsert into `albums`, obtaining `album_id`.
 6. Upsert into `tracks` (using `album_id`).
@@ -454,12 +462,16 @@ which is stored as JSON in `server_state` and exposed via
     "albums_inserted": 1,
     "albums_deleted": 0,
     "tag_read_failed": 0,
+    "tag_read_relaxed": 0,        // #35: indexed after a Relaxed retry dropped bad fields
+    "tag_read_path_only": 0,      // #35: no tag parsed; metadata taken from the path
     "companion_files_seen": 482   // Folder.jpg / *.log / *.cue / playlists / checksums (aggregated, not enumerated)
   },
   "issues": [                     // playable but needs attention
     {"path": "...", "issue": "missing_album_artist"},
     {"path": "...", "issue": "missing_album"},
-    {"path": "...", "issue": "no_duration"}
+    {"path": "...", "issue": "no_duration"},
+    {"path": "...", "issue": "tags_partially_read"},  // #35: fix the source tags
+    {"path": "...", "issue": "tags_from_path"}        // #35: per-field issues suppressed
   ],
   "skipped": [                    // actionable skips only — non-music files with NON-companion extensions
     {"path": "...", "reason": "unsupported_extension"},  // e.g. stray `.flac.tmp`, mistyped `.mp33`

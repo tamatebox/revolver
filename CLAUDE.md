@@ -72,6 +72,7 @@ Things you cannot grasp by reading one file:
 ## Active pitfalls
 
 - **Gapless playback breaks if Range handling is off** in `/stream/{track_id}`. Both suffix `bytes=-N` and `bytes=N-` must work. Play-count attribution counts only `Range` absent or `start=0`.
+- **Malformed tags don't drop tracks** (#35, SPEC §4.1 step 3). `tagger::read` tries default → `ParsingMode::Relaxed` → properties-only with metadata from the `Artist/Album/NN Title` path. lofty (0.24 and 0.25) rejects even under Relaxed the iTunes/Serato-written ID3v2 UTF-16 frames with a one-byte terminator, hence the path tier. The library is a synced copy, so fix tags at the source, never on this host. `detect_mp4_codec` reads without tags for the same reason (a bad `ilst` must not demote ALAC to AAC).
 - **Compilation albums: trust the compilation flag** (M4A `cpil` / MP3 `TCMP` / Vorbis `COMPILATION`) over Album Artist text. If set, force "Various Artists".
 - **Emit `sampleFrequency` / `bitsPerSample` / `nrAudioChannels` correctly** — wrong values are why Linn drops 24/192 streams.
 - **NAS over SMB/NFS has no btime** — fall back to mtime.

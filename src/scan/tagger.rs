@@ -1,7 +1,7 @@
-use std::path::Path;
+use std::path::{Component, Path};
 
-use lofty::config::ParseOptions;
-use lofty::file::{AudioFile, FileType, TaggedFileExt};
+use lofty::config::{ParseOptions, ParsingMode};
+use lofty::file::{AudioFile, FileType, TaggedFile, TaggedFileExt};
 use lofty::probe::Probe;
 use lofty::tag::ItemKey;
 
@@ -60,6 +60,22 @@ pub struct TrackTags {
     pub codec: String,
     pub mime_type: String,
     pub file_size: u64,
+    /// Which read attempt produced these values (#35).
+    pub fidelity: TagFidelity,
+}
+
+/// How much of a file's tag block survived parsing (#35). The scan report
+/// lists every non-`Full` track so the source tags can be fixed upstream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagFidelity {
+    /// Default lofty read succeeded.
+    Full,
+    /// Only `ParsingMode::Relaxed` succeeded: malformed fields were dropped,
+    /// the rest of the tag is intact.
+    Relaxed,
+    /// No tag could be parsed; audio properties are real, and
+    /// title / album / artist / track number come from the file path.
+    PathOnly,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -81,7 +97,13 @@ pub enum TagError {
 
 /// Read tags and audio properties from `path`. For M4A, re-parse the container
 /// to determine ALAC vs AAC (SPEC §14).
-pub fn read(path: &Path) -> Result<TrackTags, TagError> {
+///
+/// A file whose tags lofty rejects is not dropped (#35): the read is retried
+/// with `ParsingMode::Relaxed`, then properties-only with path-derived
+/// metadata (`root` anchors the `Artist/Album/NN Title` layout). Only files
+/// whose audio properties are unreadable too (e.g. an MP4 without `moov`)
+/// fail.
+pub fn read(path: &Path, root: &Path) -> Result<TrackTags, TagError> {
     let file_size = std::fs::metadata(path)
         .map_err(|source| TagError::Io {
             path: path.to_path_buf(),
@@ -89,16 +111,7 @@ pub fn read(path: &Path) -> Result<TrackTags, TagError> {
         })?
         .len();
 
-    let tagged_file = Probe::open(path)
-        .map_err(|source| TagError::Lofty {
-            path: path.to_path_buf(),
-            source,
-        })?
-        .read()
-        .map_err(|source| TagError::Lofty {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    let (tagged_file, fidelity) = probe_with_fallback(path)?;
 
     let file_type = tagged_file.file_type();
     let props = tagged_file.properties();
@@ -123,7 +136,7 @@ pub fn read(path: &Path) -> Result<TrackTags, TagError> {
     let s_rg =
         |key: ItemKey| -> Option<f64> { tag.and_then(|t| t.get_string(key).and_then(parse_rg)) };
 
-    Ok(TrackTags {
+    let mut tags = TrackTags {
         title: s(ItemKey::TrackTitle),
         artist: s(ItemKey::TrackArtist),
         album_artist: s(ItemKey::AlbumArtist),
@@ -174,7 +187,106 @@ pub fn read(path: &Path) -> Result<TrackTags, TagError> {
         codec,
         mime_type,
         file_size,
+        fidelity,
+    };
+    if fidelity == TagFidelity::PathOnly {
+        fill_from_path(&mut tags, path, root);
+    }
+    Ok(tags)
+}
+
+/// Default read → `Relaxed` → properties-only. Returns the first error when
+/// every attempt fails, since that is the one describing the real defect.
+fn probe_with_fallback(path: &Path) -> Result<(TaggedFile, TagFidelity), TagError> {
+    let attempt = |opts: ParseOptions| Probe::open(path).and_then(|p| p.options(opts).read());
+
+    let first_err = match attempt(ParseOptions::new()) {
+        Ok(f) => return Ok((f, TagFidelity::Full)),
+        Err(e) => e,
+    };
+    // Recovers per-field defects such as a non-digit ID3v2 timestamp.
+    if let Ok(f) = attempt(ParseOptions::new().parsing_mode(ParsingMode::Relaxed)) {
+        return Ok((f, TagFidelity::Relaxed));
+    }
+    // Defects Relaxed does not tolerate (e.g. a UTF-16 text frame with a
+    // one-byte terminator) still leave the audio stream readable.
+    if let Ok(f) = attempt(ParseOptions::new().read_tags(false).read_cover_art(false)) {
+        return Ok((f, TagFidelity::PathOnly));
+    }
+    Err(TagError::Lofty {
+        path: path.to_path_buf(),
+        source: first_err,
     })
+}
+
+/// Fill title / track / disc / album / artist from `Artist/Album/NN Title.ext`
+/// relative to `root`. Shallower layouts fill what they can. An iTunes-style
+/// `Compilations/` artist folder marks the album as a compilation instead.
+fn fill_from_path(tags: &mut TrackTags, path: &Path, root: &Path) {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    let dirs: Vec<&str> = rel
+        .parent()
+        .into_iter()
+        .flat_map(|p| p.components())
+        .filter_map(|c| match c {
+            Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+        .collect();
+
+    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+        let (disc, track, title) = split_track_prefix(stem);
+        tags.title = Some(title.to_string());
+        tags.track_num = track;
+        tags.disc_num = disc;
+    }
+    if let Some(album) = dirs.last() {
+        tags.album = Some((*album).to_string());
+    }
+    if dirs.len() >= 2 {
+        let artist = dirs[dirs.len() - 2];
+        if artist == "Compilations" {
+            tags.compilation = true;
+        } else {
+            tags.artist = Some(artist.to_string());
+        }
+    }
+}
+
+/// Split `"01 Title"` / `"1-03 Title"` / `"07. Title"` into
+/// `(disc, track, title)`. Prefixes longer than 3 digits are kept in the
+/// title (`"1999 Remix"`, `"20210404-01"`), as is a stem that would be left
+/// with no title.
+fn split_track_prefix(stem: &str) -> (Option<u32>, Option<u32>, &str) {
+    const SEPARATORS: [char; 4] = [' ', '.', '-', '_'];
+    let leading_digits = |s: &str| s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+
+    let n = leading_digits(stem);
+    if n == 0 || n > 3 {
+        return (None, None, stem);
+    }
+    let first: u32 = stem[..n].parse().unwrap_or(0);
+    let mut rest = &stem[n..];
+    let mut disc = None;
+    let mut track = first;
+
+    // "1-03 Title": disc 1, track 3.
+    if let Some(after_dash) = rest.strip_prefix('-') {
+        let m = leading_digits(after_dash);
+        if (1..=3).contains(&m) && after_dash[m..].starts_with(SEPARATORS) {
+            disc = Some(first);
+            track = after_dash[..m].parse().unwrap_or(0);
+            rest = &after_dash[m..];
+        }
+    }
+    if !rest.starts_with(SEPARATORS) {
+        return (None, None, stem);
+    }
+    let title = rest.trim_start_matches(SEPARATORS).trim();
+    if title.is_empty() {
+        return (None, None, stem);
+    }
+    (disc, Some(track), title)
 }
 
 /// Extract the leading u32 from a "current/total" string such as "3/12".
@@ -260,7 +372,9 @@ fn detect_mp4_codec(path: &Path) -> String {
         Err(_) => return "aac".to_string(),
     };
     let mut reader = BufReader::new(file);
-    match <Mp4File as AudioFile>::read_from(&mut reader, ParseOptions::new()) {
+    // Codec only: skip tags so a malformed ilst (#35) can't mask ALAC.
+    let opts = ParseOptions::new().read_tags(false).read_cover_art(false);
+    match <Mp4File as AudioFile>::read_from(&mut reader, opts) {
         Ok(mp4) => match mp4.properties().codec() {
             Mp4Codec::ALAC => "alac".to_string(),
             Mp4Codec::AAC => "aac".to_string(),
@@ -283,6 +397,70 @@ fn mime_for(ft: FileType) -> &'static str {
         FileType::Wav => "audio/x-wav",
         FileType::Aiff => "audio/x-aiff",
         _ => "application/octet-stream",
+    }
+}
+
+/// Generated MP3 fixtures for the #35 fallback tests (shared with scan tests).
+#[cfg(test)]
+pub(crate) mod test_fixtures {
+    use std::path::{Path, PathBuf};
+
+    /// `n` silent MPEG-1 Layer III frames (128 kbps, 44.1 kHz, 417 bytes each)
+    /// — enough for lofty to read real audio properties.
+    pub(crate) fn mpeg_frames(n: usize) -> Vec<u8> {
+        let mut v = Vec::new();
+        for _ in 0..n {
+            v.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
+            v.extend(std::iter::repeat_n(0u8, 413));
+        }
+        v
+    }
+
+    fn syncsafe(n: usize) -> [u8; 4] {
+        [
+            (n >> 21) as u8 & 0x7F,
+            (n >> 14) as u8 & 0x7F,
+            (n >> 7) as u8 & 0x7F,
+            n as u8 & 0x7F,
+        ]
+    }
+
+    /// ID3v2.4 tag with Latin-1 text frames.
+    pub(crate) fn id3v24(frames: &[(&str, &str)]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (id, text) in frames {
+            let data: Vec<u8> = std::iter::once(0u8).chain(text.bytes()).collect();
+            body.extend_from_slice(id.as_bytes());
+            body.extend_from_slice(&syncsafe(data.len()));
+            body.extend_from_slice(&[0, 0]);
+            body.extend_from_slice(&data);
+        }
+        let mut tag = b"ID3\x04\x00\x00".to_vec();
+        tag.extend_from_slice(&syncsafe(body.len()));
+        tag.extend_from_slice(&body);
+        tag
+    }
+
+    /// ID3v2.2 tag whose TT2 is UTF-16 with a one-byte terminator — the
+    /// exact bytes seen in the wild (`01 FF FE 8F 5E 00` = "序" + stray NUL).
+    pub(crate) fn id3v22_odd_utf16_title() -> Vec<u8> {
+        let data = [0x01, 0xFF, 0xFE, 0x8F, 0x5E, 0x00];
+        let mut body = b"TT2".to_vec();
+        body.extend_from_slice(&[0, 0, data.len() as u8]);
+        body.extend_from_slice(&data);
+        let mut tag = b"ID3\x02\x00\x00".to_vec();
+        tag.extend_from_slice(&syncsafe(body.len()));
+        tag.extend_from_slice(&body);
+        tag
+    }
+
+    pub(crate) fn write_mp3(root: &Path, rel: &str, tag: Vec<u8>) -> PathBuf {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut bytes = tag;
+        bytes.extend(mpeg_frames(40));
+        std::fs::write(&path, bytes).unwrap();
+        path
     }
 }
 
@@ -444,5 +622,117 @@ mod tests {
         assert!(!codec_is_lossless("unknown"));
         assert!(!codec_is_lossless(""));
         assert!(!codec_is_lossless("FLAC")); // case-sensitive: internal form is lowercase
+    }
+
+    // ── #35: tiered read (Full → Relaxed → PathOnly) ──────────────
+
+    use super::test_fixtures::{id3v22_odd_utf16_title, id3v24, write_mp3};
+
+    #[test]
+    fn tf1_well_formed_tags_are_full_fidelity() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = write_mp3(
+            tmp.path(),
+            "A/B/01 x.mp3",
+            id3v24(&[("TIT2", "Title"), ("TPE1", "Artist"), ("TDRC", "1997")]),
+        );
+        let t = read(&p, tmp.path()).unwrap();
+        assert_eq!(t.fidelity, TagFidelity::Full);
+        assert_eq!(t.title.as_deref(), Some("Title"));
+        assert_eq!(t.year, Some(1997));
+    }
+
+    #[test]
+    fn tf2_bad_timestamp_recovers_via_relaxed_keeping_other_fields() {
+        // TDRC "1997, 2016" fails the default read ("non-digit characters").
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = write_mp3(
+            tmp.path(),
+            "Compilations/Tribute/01 Song.mp3",
+            id3v24(&[
+                ("TIT2", "Cruel Angel"),
+                ("TPE1", "Someone"),
+                ("TALB", "Tribute Album"),
+                ("TRCK", "1"),
+                ("TDRC", "1997, 2016"),
+            ]),
+        );
+        let t = read(&p, tmp.path()).unwrap();
+        assert_eq!(t.fidelity, TagFidelity::Relaxed);
+        assert_eq!(t.title.as_deref(), Some("Cruel Angel"));
+        assert_eq!(t.album.as_deref(), Some("Tribute Album"));
+        assert_eq!(t.track_num, Some(1));
+        assert_eq!(t.year, None, "the malformed date frame is dropped");
+    }
+
+    #[test]
+    fn tf3_odd_utf16_frame_falls_back_to_path_metadata() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = write_mp3(
+            tmp.path(),
+            "Shing02/歪曲/01 序.mp3",
+            id3v22_odd_utf16_title(),
+        );
+        let t = read(&p, tmp.path()).unwrap();
+        assert_eq!(t.fidelity, TagFidelity::PathOnly);
+        assert_eq!(t.artist.as_deref(), Some("Shing02"));
+        assert_eq!(t.album.as_deref(), Some("歪曲"));
+        assert_eq!(t.title.as_deref(), Some("序"));
+        assert_eq!(t.track_num, Some(1));
+        assert!(!t.compilation);
+        assert_eq!(t.codec, "mp3");
+        assert!(t.duration_ms.unwrap_or(0) > 0, "audio properties are real");
+    }
+
+    #[test]
+    fn tf4_path_fallback_under_compilations_marks_compilation() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = write_mp3(
+            tmp.path(),
+            "Compilations/Some Tribute/1-03 Track.mp3",
+            id3v22_odd_utf16_title(),
+        );
+        let t = read(&p, tmp.path()).unwrap();
+        assert_eq!(t.fidelity, TagFidelity::PathOnly);
+        assert!(t.compilation);
+        assert_eq!(t.artist, None);
+        assert_eq!(t.album.as_deref(), Some("Some Tribute"));
+        assert_eq!((t.disc_num, t.track_num), (Some(1), Some(3)));
+        assert_eq!(t.title.as_deref(), Some("Track"));
+    }
+
+    #[test]
+    fn tf5_unreadable_audio_still_fails() {
+        // An MP4 without `moov` has no readable properties at all.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("memo.m4a");
+        std::fs::write(&p, b"\x00\x00\x00\x08freeNOT AN MP4 MOVIE").unwrap();
+        assert!(read(&p, tmp.path()).is_err());
+    }
+
+    #[test]
+    fn tp1_split_track_prefix_variants() {
+        assert_eq!(split_track_prefix("01 序"), (None, Some(1), "序"));
+        assert_eq!(split_track_prefix("07. Title"), (None, Some(7), "Title"));
+        assert_eq!(
+            split_track_prefix("15 [Secret Track]"),
+            (None, Some(15), "[Secret Track]")
+        );
+        assert_eq!(
+            split_track_prefix("1-03 Title"),
+            (Some(1), Some(3), "Title")
+        );
+        assert_eq!(
+            split_track_prefix("53 053_一休さん"),
+            (None, Some(53), "053_一休さん")
+        );
+        assert_eq!(split_track_prefix("02 - Song"), (None, Some(2), "Song"));
+    }
+
+    #[test]
+    fn tp2_split_track_prefix_keeps_non_prefixes_in_title() {
+        for stem in ["Title", "1999 Remix", "20210404-01", "17", "01", "3am"] {
+            assert_eq!(split_track_prefix(stem), (None, None, stem), "{stem}");
+        }
     }
 }
