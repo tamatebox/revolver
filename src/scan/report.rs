@@ -32,6 +32,12 @@ pub struct ScanStats {
     pub albums_inserted: usize,
     pub albums_deleted: usize,
     pub tag_read_failed: usize,
+    /// #35: indexed after a `ParsingMode::Relaxed` retry dropped malformed
+    /// fields (listed per path as `tags_partially_read` issues).
+    pub tag_read_relaxed: usize,
+    /// #35: no tag parsed; indexed with path-derived title / album / artist
+    /// (listed per path as `tags_from_path` issues).
+    pub tag_read_path_only: usize,
     /// Album art / sidecars (`Folder.jpg`, `*.log`, `*.cue`, …) seen during
     /// walk. Counted only — paths are not enumerated in `skipped` (#19).
     pub companion_files_seen: usize,

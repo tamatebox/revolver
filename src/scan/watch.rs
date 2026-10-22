@@ -576,6 +576,10 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(1);
         let _w = start_watcher(&root, Arc::new(exts()), tx).unwrap();
+        // macOS FSEvents can deliver the setup writes above after the stream
+        // starts; let them settle and drain so only the scan is under test.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        while rx.try_recv().is_ok() {}
 
         let dbdir = TempDir::new().unwrap();
         let pool = crate::db::pool(&dbdir.path().join("t.db")).unwrap();

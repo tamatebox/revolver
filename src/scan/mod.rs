@@ -180,10 +180,15 @@ fn run_inner(
     let tagged = parallel_tag_read(
         &enumerated,
         &needs_tag_read_idx,
+        root,
         parallel,
         Arc::clone(progress),
     );
     let tag_read_failed = needs_tag_read_idx.len() - tagged.len();
+    let count_fidelity =
+        |f: tagger::TagFidelity| tagged.iter().filter(|t| t.tags.fidelity == f).count();
+    let tag_read_relaxed = count_fidelity(tagger::TagFidelity::Relaxed);
+    let tag_read_path_only = count_fidelity(tagger::TagFidelity::PathOnly);
 
     // ── Pre-count for albums_inserted ──────────────────────────────
     let albums_before: i64 = conn.query_row("SELECT COUNT(*) FROM albums", [], |r| r.get(0))?;
@@ -207,23 +212,42 @@ fn run_inner(
             // (security §6, to prevent absolute host path leakage).
             let path_str = t.enumerated.path_str.as_str();
             let rel = relativize_path(&t.enumerated.path, root);
-            if t.tags.album.as_deref().unwrap_or("").is_empty() {
-                issues.push(Issue {
-                    path: rel.clone(),
-                    issue: "missing_album",
-                });
-            }
-            if !t.tags.compilation && t.tags.album_artist.as_deref().unwrap_or("").is_empty() {
-                issues.push(Issue {
-                    path: rel.clone(),
-                    issue: "missing_album_artist",
-                });
-            }
-            if t.tags.duration_ms.is_none() {
-                issues.push(Issue {
+            // #35: recovered reads are listed so the source tags can be fixed.
+            // Path-only tracks report just that — their missing album artist
+            // etc. follow from it and would only add noise.
+            match t.tags.fidelity {
+                tagger::TagFidelity::PathOnly => issues.push(Issue {
                     path: rel,
-                    issue: "no_duration",
-                });
+                    issue: "tags_from_path",
+                }),
+                fidelity => {
+                    if fidelity == tagger::TagFidelity::Relaxed {
+                        issues.push(Issue {
+                            path: rel.clone(),
+                            issue: "tags_partially_read",
+                        });
+                    }
+                    if t.tags.album.as_deref().unwrap_or("").is_empty() {
+                        issues.push(Issue {
+                            path: rel.clone(),
+                            issue: "missing_album",
+                        });
+                    }
+                    if !t.tags.compilation
+                        && t.tags.album_artist.as_deref().unwrap_or("").is_empty()
+                    {
+                        issues.push(Issue {
+                            path: rel.clone(),
+                            issue: "missing_album_artist",
+                        });
+                    }
+                    if t.tags.duration_ms.is_none() {
+                        issues.push(Issue {
+                            path: rel,
+                            issue: "no_duration",
+                        });
+                    }
+                }
             }
 
             let eff_aa = matcher::effective_album_artist(
@@ -354,6 +378,8 @@ fn run_inner(
         albums_inserted,
         albums_deleted,
         tag_read_failed,
+        tag_read_relaxed,
+        tag_read_path_only,
         companion_files_seen,
     };
 
@@ -375,6 +401,8 @@ fn run_inner(
         albums_inserted = stats.albums_inserted,
         albums_deleted = stats.albums_deleted,
         tag_read_failed = stats.tag_read_failed,
+        tag_read_relaxed = stats.tag_read_relaxed,
+        tag_read_path_only = stats.tag_read_path_only,
         companion_files_seen = stats.companion_files_seen,
         issues = issues.len(),
         skipped = skipped.len(),
@@ -433,6 +461,7 @@ pub(crate) fn partition_by_mtime(
 fn parallel_tag_read<'a>(
     enumerated: &'a [EnumeratedTrack],
     needs_idx: &[usize],
+    root: &Path,
     parallel: usize,
     progress: Arc<ScanProgress>,
 ) -> Vec<TaggedTrack<'a>> {
@@ -463,7 +492,7 @@ fn parallel_tag_read<'a>(
             .par_iter()
             .filter_map(|&i| {
                 let et = &enumerated[i];
-                let outcome = match tagger::read(&et.path) {
+                let outcome = match tagger::read(&et.path, root) {
                     Ok(tags) => Some(TaggedTrack {
                         enumerated: et,
                         tags,
@@ -715,6 +744,73 @@ mod tests {
             .parse()
             .unwrap();
         assert_eq!(id, 2);
+    }
+
+    #[test]
+    fn tf6_recovered_tracks_are_indexed_reported_and_not_reread() {
+        // #35: a relaxed read and a path-only read both land in the library,
+        // are listed once in `issues`, and the mtime skip covers them next scan.
+        use crate::scan::tagger::test_fixtures::{id3v22_odd_utf16_title, id3v24, write_mp3};
+        let tmp = TempDir::new().unwrap();
+        let pool = crate::db::pool(&tmp.path().join("scan.db")).unwrap();
+        let mut conn = pool.get().unwrap();
+        let music = TempDir::new().unwrap();
+        let root = std::fs::canonicalize(music.path()).unwrap();
+        write_mp3(&root, "Artist/Album/01 序.mp3", id3v22_odd_utf16_title());
+        write_mp3(
+            &root,
+            "Various/Tribute/02 Song.mp3",
+            id3v24(&[
+                ("TIT2", "Song"),
+                ("TALB", "Tribute"),
+                ("TDRC", "1997, 2016"),
+            ]),
+        );
+        let extensions = vec!["mp3".to_string()];
+        let scan = |conn: &mut Connection| {
+            run(
+                conn,
+                &root,
+                &extensions,
+                1,
+                Arc::new(ScanProgress::new()),
+                ScanReport::new_id(),
+            )
+            .unwrap()
+        };
+
+        let first = scan(&mut conn);
+        assert_eq!(first.stats.tracks_inserted, 2);
+        assert_eq!(first.stats.tag_read_failed, 0);
+        assert_eq!(first.stats.tag_read_relaxed, 1);
+        assert_eq!(first.stats.tag_read_path_only, 1);
+        let mut kinds: Vec<_> = first
+            .issues
+            .iter()
+            .filter(|i| i.issue.starts_with("tags_"))
+            .map(|i| (i.path.as_str(), i.issue))
+            .collect();
+        kinds.sort();
+        assert_eq!(
+            kinds,
+            vec![
+                ("Artist/Album/01 序.mp3", "tags_from_path"),
+                ("Various/Tribute/02 Song.mp3", "tags_partially_read"),
+            ]
+        );
+        let title: String = conn
+            .query_row(
+                "SELECT title FROM tracks WHERE path LIKE '%01 序.mp3'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(title, "序");
+
+        let second = scan(&mut conn);
+        assert_eq!(second.stats.tracks_unchanged, 2, "no re-read on rescan");
+        assert_eq!(second.stats.tag_read_path_only, 0);
+        assert_eq!(second.stats.tag_read_relaxed, 0);
     }
 
     #[test]
