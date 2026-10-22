@@ -12,7 +12,7 @@ base64 = "0.22"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
 lofty = "0.24"
-quick-xml = "0.36"
+quick-xml = "0.41"
 r2d2 = "0.8"
 r2d2_sqlite = "0.25"
 rand = "0.8"
