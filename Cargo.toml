@@ -17,7 +17,7 @@ lofty = "0.24"
 # `notify-debouncer-*` crates are deliberately not used (in-house debounce in
 # scan/watch.rs) to limit exposure to their API churn.
 notify = "8.2"
-quick-xml = "0.36"
+quick-xml = "0.41"
 r2d2 = "0.8"
 r2d2_sqlite = "0.25"
 rand = "0.8"
